@@ -1,11 +1,17 @@
-# masking/pipeline.py  v3  (bug-fixed)
+# masking/pipeline.py  v4
 """
-主脫敏管線 v3
-新增：ConflictResolver、AMOUNT_TXN、語料可用度標記、Diarization 強化 fallback
+主脫敏管線
+核心步驟：Normalize → Presidio Analyze → Bank Rules → ConflictResolver
+          → Pseudonym → Audit + Usability
 
-修正紀錄（v3 bug-fix）：
+v4 變更：
+  - 移除 Step 4 LLM（下游 LLM 在 pipeline 之後處理 masked_text，不再作為 recognizer）
+  - 連帶移除 enable_llm_step 參數、_build_llm_analyzer、_run_llm_step、_merge_results
+  - 原本的 Step 4.5 ConflictResolver 重新編號為 Step 4
+
+修正紀錄（v3 bug-fix，保留為歷史記錄）：
   Bug 1 (嚴重) - operator_config 以 entity_type 為 key 導致同類型多筆互蓋
-                 → 改為 per-span 的 OperatorConfig，以 Presidio ItemizedResult 處理
+                 → 改為 per-span 的逐 span 字串替換
   Bug 2 (中等) - conflict_set 計算邏輯錯誤（把所有 result 都加入）且從未使用
                  → 改為正確計算「有被 resolve 的 result id 集合」
   Bug 3 (中等) - conflict_resolved 以 entity_type 模糊比對，應以 id(r) 精確比對
@@ -19,8 +25,6 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from presidio_analyzer import AnalyzerEngine, RecognizerRegistry, RecognizerResult
 from presidio_analyzer.nlp_engine import NlpEngineProvider
-from presidio_anonymizer import AnonymizerEngine
-from presidio_anonymizer.entities import OperatorConfig
 
 from audit import AuditLogger
 from config import (
@@ -69,9 +73,9 @@ class DialogueTurn:
 
 class MaskingPipeline:
     """
-    銀行語音文字脫敏管線 v3
-    Steps: 0 正規化 → 1+2 Presidio分析 → 3 銀行規則 → 4 LLM(可選)
-           → 4.5 ★ConflictResolver → 5 假名一致性 → 6 Audit+可用度標記
+    銀行語音文字脫敏管線 v4
+    Steps: 0 正規化 → 1+2 Presidio分析 → 3 銀行規則
+           → 4 ★ConflictResolver → 5 假名一致性 → 6 Audit+可用度標記
     """
     _SUPPORTED_ENTITIES = list(TOKEN_MAP.keys())
 
@@ -80,7 +84,6 @@ class MaskingPipeline:
         log_path:                 Optional[str] = "audit_log.csv",
         score_threshold:          float = 0.60,
         mask_branch_code:         bool  = False,
-        enable_llm_step:          bool  = False,
         ckip_model:               str   = "bert-base",
         ckip_device:              int   = -1,
         asr_confidence_threshold: float = 0.70,
@@ -88,27 +91,24 @@ class MaskingPipeline:
         spacy_model:              str   = "zh_core_web_sm",
     ):
         """
-        銀行語音文字脫敏管線 v3。
+        銀行語音文字脫敏管線 v4。
 
-        Note: CKIP Transformers NER 為必要組件（中文 PERSON / LOCATION 偵測來源）。
-        Presidio 的 `EntityRecognizer.__init__` 會同步呼叫 `load()`，因此 CKIP 模型
-        會在 `MaskingPipeline` 初始化時即下載並載入（首次執行時較慢）。
+        Note: CKIP Transformers NER 為必要組件（中文 PERSON / LOCATION / ORG
+        偵測來源）。Presidio 的 `EntityRecognizer.__init__` 會同步呼叫 `load()`，
+        因此 CKIP 模型會在 `MaskingPipeline` 初始化時即下載並載入（首次執行時較慢）。
         執行前須安裝 `ckip-transformers` 與 `torch`。
+
+        v4 起移除 LLM recognizer step — pipeline 只負責遮罩，下游 LLM 在
+        `masked_text` 之後才介入處理。
         """
         self.score_threshold          = score_threshold
         self.mask_branch_code         = mask_branch_code
-        self.enable_llm_step          = enable_llm_step
         self.ckip_model               = ckip_model
         self.ckip_device              = ckip_device
         self.asr_confidence_threshold = asr_confidence_threshold
 
-        self._analyzer   = self._build_analyzer(nlp_engine_name, spacy_model)
-        self._anonymizer = AnonymizerEngine()
-        self._resolver   = ConflictResolver()
-
-        self._llm_analyzer = None
-        if enable_llm_step:
-            self._llm_analyzer = self._build_llm_analyzer()
+        self._analyzer = self._build_analyzer(nlp_engine_name, spacy_model)
+        self._resolver = ConflictResolver()
 
         self._logger: Optional[AuditLogger] = None
         if log_path:
@@ -154,11 +154,7 @@ class MaskingPipeline:
             normalized, raw_results, speaker, diarization_available
         )
 
-        # Step 4：LLM（可選）
-        if self.enable_llm_step and self._llm_analyzer:
-            results = self._merge_results(results, self._run_llm_step(normalized))
-
-        # Step 4.5：Conflict Resolver
+        # Step 4：Conflict Resolver
         results, conflict_log = self._resolver.resolve(results, normalized)
 
         # Step 5：假名一致性
@@ -172,17 +168,8 @@ class MaskingPipeline:
             token          = tracker.resolve(r.entity_type, original_value, base_token)
             token_map[id(r)] = token
 
-        # ────────────────────────────────────────────────────
-        # BUG 1 修正：改用 per-span OperatorConfig
-        #
-        # 原始問題：以 entity_type 為 key，同一類型多筆實體
-        #           dict comprehension 後者蓋前者，只保留最後一個 token。
-        #
-        # 修正方案：Presidio anonymize() 接受 operators 字典以 entity_type 為 key，
-        #           但其實無法做 per-span 的不同 token。
-        #           解法：自行做字串替換（按 start 倒序，避免位移），
-        #           繞過 anonymizer 的 entity_type-only 限制。
-        # ────────────────────────────────────────────────────
+        # BUG 1 修正：逐 span 替換，避免 Presidio anonymize() 以 entity_type
+        # 為 key 時同類型多筆互蓋。詳見 _apply_per_span_replacement docstring。
         masked_text = self._apply_per_span_replacement(normalized, results, token_map)
 
         # Step 6：可用度標記
@@ -303,14 +290,6 @@ class MaskingPipeline:
             registry=registry, nlp_engine=nlp_engine,
             supported_languages=["zh", "en"],
         )
-
-    def _build_llm_analyzer(self):
-        try:
-            from presidio_analyzer.predefined_recognizers import AzureAILanguageRecognizer
-            return AzureAILanguageRecognizer()
-        except ImportError:
-            print("[警告] Presidio LLM plugin 未安裝，Step 4 略過。")
-            return None
 
     def _apply_bank_rules(
         self,
@@ -438,40 +417,6 @@ class MaskingPipeline:
             return UsabilityTag.DEGRADED_MASKING, False
 
         return UsabilityTag.USABLE, False
-
-    def _merge_results(
-        self,
-        primary:   List[RecognizerResult],
-        secondary: List[RecognizerResult],
-    ) -> List[RecognizerResult]:
-        """
-        合併 primary (Presidio) 與 secondary (LLM) 結果。
-
-        對相同 (start, end, entity_type) 的 span：保留 score 較高者；
-        同分保留 primary（維持 Presidio 為主、LLM 為輔）。
-        """
-        by_key: Dict[Tuple[int, int, str], RecognizerResult] = {}
-        order: List[Tuple[int, int, str]] = []
-        for r in primary:
-            key = (r.start, r.end, r.entity_type)
-            if key not in by_key:
-                order.append(key)
-                by_key[key] = r
-        for r in secondary:
-            key = (r.start, r.end, r.entity_type)
-            if key not in by_key:
-                order.append(key)
-                by_key[key] = r
-            elif r.score > by_key[key].score:
-                by_key[key] = r
-        return [by_key[k] for k in order]
-
-    def _run_llm_step(self, text: str) -> List[RecognizerResult]:
-        try:
-            return self._llm_analyzer.analyze(text=text, entities=["LOCATION", "PERSON"])
-        except Exception as e:
-            print(f"[警告] LLM Step 4 失敗：{e}")
-            return []
 
     @staticmethod
     def _get_subtype(result: RecognizerResult) -> str:

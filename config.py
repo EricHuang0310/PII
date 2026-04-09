@@ -15,6 +15,7 @@ TOKEN_MAP: dict[str, str] = {
     "PASSPORT":             "[PASSPORT]",
     "EMAIL_ADDRESS":        "[EMAIL]",
     "LOCATION":             "[ADDRESS]",
+    "ORG":                  "[ORG]",
     "DOB":                  "[DOB]",
     "VERIFICATION_ANSWER":  "[VERIFICATION_ANSWER]",
     "TW_CREDIT_CARD":       "[CARD]",
@@ -56,6 +57,7 @@ ENTITY_PRIORITY: dict[str, int] = {
     "PASSPORT":          83,
     "EMAIL_ADDRESS":     82,
     "LOCATION":          78,
+    "ORG":               76,
     "LOAN_REF":          72,
     "TXN_REF":           68,
     "ATM_REF":           66,
@@ -84,6 +86,7 @@ ENTITY_RISK_LEVEL: dict[str, int] = {
     "AMOUNT_TXN":        3,
     "AMOUNT":            3,
     "LOCATION":          3,
+    "ORG":               2,
     "LOAN_REF":          3,
     "TXN_REF":           2,
     "ATM_REF":           2,
@@ -99,6 +102,7 @@ ENTITY_RISK_LEVEL: dict[str, int] = {
 # ══════════════════════════════════════════════════════════════
 PSEUDONYM_ENTITIES: set[str] = {
     "PERSON",
+    "ORG",
     "TW_CREDIT_CARD",
     "TW_BANK_ACCOUNT",
     "TXN_REF",
