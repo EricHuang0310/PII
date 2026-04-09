@@ -3,14 +3,14 @@
 CKIP Transformers NER → Presidio EntityRecognizer 整合模組
 
 將 CkipNerChunker 包裝為 Presidio 的 EntityRecognizer，
-專門偵測中文姓名（PERSON）與地點（LOCATION），
+偵測中文姓名（PERSON）、地點（LOCATION）與機構（ORG），
 補足 regex recognizer 無法覆蓋的 NER 實體。
 
 CKIP NER 標籤對照：
   PERSON       → PERSON（姓名）
   GPE          → LOCATION（地理政治實體，如國家、城市）
   LOC          → LOCATION（一般地點）
-  ORG          → ORG（組織，目前不脫敏，保留供未來擴充）
+  ORG          → ORG（組織/機構名稱）
   其他標籤      → 忽略
 
 使用方式：
@@ -42,7 +42,7 @@ _CKIP_TO_PRESIDIO = {
     "PERSON": "PERSON",
     "GPE":    "LOCATION",   # 地理政治實體（國家、縣市）
     "LOC":    "LOCATION",   # 一般地點
-    "ORG":  "ORG",        # 未來可開啟
+    "ORG":    "ORG",        # 組織/機構名稱
 }
 
 
@@ -50,7 +50,7 @@ class CkipNerRecognizer(EntityRecognizer):
     """
     使用 CKIP Transformers 進行中文 NER 的 Presidio Recognizer。
 
-    支援偵測：PERSON（中文姓名）、LOCATION（地點/地址）
+    支援偵測：PERSON（中文姓名）、LOCATION（地點/地址）、ORG（機構名稱）
 
     Parameters
     ----------
@@ -84,7 +84,7 @@ class CkipNerRecognizer(EntityRecognizer):
         self._default_score = score
         self._min_name_length = min_name_length
 
-        entities = supported_entities or ["PERSON", "LOCATION"]
+        entities = supported_entities or ["PERSON", "LOCATION", "ORG"]
 
         super().__init__(
             supported_entities=entities,
@@ -200,7 +200,7 @@ if __name__ == "__main__":
     ]
 
     for text in test_texts:
-        results = recognizer.analyze(text, ["PERSON", "LOCATION"])
+        results = recognizer.analyze(text, ["PERSON", "LOCATION", "ORG"])
         if results:
             ents = ", ".join(
                 f"{r.entity_type}({text[r.start:r.end]})" for r in results
