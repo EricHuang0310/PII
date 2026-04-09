@@ -82,23 +82,24 @@ python pipeline.py        # 使用 spacy.blank("zh")，CKIP 負責 PERSON/LOCATI
 
 > 首次執行時 CKIP 會下載並載入 NER 模型，需事先 `pip install ckip-transformers torch`。
 
-## 架構：7 步驟 Pipeline
+## 架構：6 步驟 Pipeline
 
-`MaskingPipeline.mask()`（`pipeline.py:120`）是單筆入口，`mask_dialogue()` 為對話 wrapper 並共用 `PseudonymTracker`：
+`MaskingPipeline.mask()`（`pipeline.py`）是單筆入口，`mask_dialogue()` 為對話 wrapper 並共用 `PseudonymTracker`：
 
 | Step | 作用 | 關鍵模組 |
 |---|---|---|
 | 0 | 正規化（NFC、全形半形、中文數字、民國年、STT 語助詞、空白） | `normalizer.normalize` |
-| 1+2 | Presidio 分析（regex + 內建 spaCy NER + CKIP NER） | `recognizers.get_all_custom_recognizers` |
+| 1+2 | Presidio 分析（regex + CKIP NER） | `recognizers.get_all_custom_recognizers` |
 | 3 | 銀行規則（條件式 AMOUNT、speaker-aware boost） | `pipeline._apply_bank_rules` |
-| 4 | LLM 補充偵測（可選） | `pipeline._run_llm_step` |
-| 4.5 | 衝突解決 | `conflict_resolver.ConflictResolver` |
+| 4 | 衝突解決 | `conflict_resolver.ConflictResolver` |
 | 5 | Token 替換（per-span，統一 base token） | `pseudonym.PseudonymTracker` |
 | 6 | Audit log + 可用度標記 | `audit.AuditLogger` |
 
+> v4 已移除 LLM recognizer（原 Step 4）。在實際部署中，下游 LLM 會在本 pipeline **產出 masked_text 之後**才介入處理，不再作為 pipeline 內部的 recognizer。
+
 ### ConflictResolver 決勝順序
 
-1. **Exact Duplicate Dedup** — 相同 `(start, end, entity_type)` 只保留 score 最高者（同分保留先出現者）。處理 CKIP × spaCy × `AddressEnhancedRecognizer` 對 PERSON/LOCATION 的純重複偵測。
+1. **Exact Duplicate Dedup** — 相同 `(start, end, entity_type)` 只保留 score 最高者（同分保留先出現者）。處理 CKIP × `AddressEnhancedRecognizer` 對 LOCATION 的純重複偵測。
 2. **Contains** — 完全包含時長者勝
 3. **Risk Level** — 部分重疊時以 `ENTITY_RISK_LEVEL` 高者勝
 4. **Span Length** — 同風險等級時長者勝
@@ -110,12 +111,14 @@ python pipeline.py        # 使用 spacy.blank("zh")，CKIP 負責 PERSON/LOCATI
 
 | 類別 | 實體 |
 |---|---|
-| 個人識別 | `PERSON`、`TW_ID_NUMBER`、`PASSPORT`、`DOB`、`TW_PHONE`、`EMAIL_ADDRESS`、`LOCATION` |
+| 個人識別 | `PERSON`、`TW_ID_NUMBER`、`PASSPORT`、`DOB`、`TW_PHONE`、`EMAIL_ADDRESS`、`LOCATION`、`ORG` |
 | 金融帳戶 | `TW_CREDIT_CARD`、`TW_BANK_ACCOUNT` |
 | 交易序號 | `ATM_REF`、`TXN_REF`、`LOAN_REF`、`POLICY_NO` |
 | 金額 | `AMOUNT`（條件式）、`AMOUNT_TXN`（高風險動詞） |
 | 認證 | `OTP`、`CVV`、`EXPIRY`、`PIN`、`VERIFICATION_ANSWER` |
 | 行內 | `STAFF_ID`、`CAMPAIGN`、`BRANCH` |
+
+`PERSON`、`LOCATION`、`ORG` 由 CKIP Transformers NER 偵測，其餘由 regex recognizer 處理。
 
 新增實體類型時需同步修改：
 1. `config.py` — `TOKEN_MAP`、`ENTITY_PRIORITY`、`ENTITY_RISK_LEVEL`
