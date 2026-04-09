@@ -1,0 +1,100 @@
+{
+  "description": "Canonical bank-call-center PII masking dialogue. Derived from the v3/v4 demo() in pipeline.py and the 003_脫敏規則表_v3 business rules. Each case exercises a different entity type or combination. Regex-detectable PII only — PERSON/LOCATION/ORG require CKIP NER and are covered by requires_ckip tests.",
+  "cases": [
+    {
+      "name": "phone_mobile_with_context",
+      "text": "我的電話是0912345678",
+      "expected_types": ["TW_PHONE"]
+    },
+    {
+      "name": "phone_landline_with_context",
+      "text": "公司電話0223456789",
+      "expected_types": ["TW_PHONE"]
+    },
+    {
+      "name": "tw_id_number_with_context",
+      "text": "身分證字號A123456789",
+      "expected_types": ["TW_ID_NUMBER"]
+    },
+    {
+      "name": "passport_with_context",
+      "text": "護照號碼是AB1234567",
+      "expected_types": ["PASSPORT"]
+    },
+    {
+      "name": "credit_card_with_context",
+      "text": "卡號4111111111111111",
+      "expected_types": ["TW_CREDIT_CARD"]
+    },
+    {
+      "name": "bank_account_with_context",
+      "text": "帳號1234567890",
+      "expected_types": ["TW_BANK_ACCOUNT"]
+    },
+    {
+      "name": "otp_with_context",
+      "text": "驗證碼是654321",
+      "expected_types": ["OTP"]
+    },
+    {
+      "name": "cvv_with_context",
+      "text": "安全碼123",
+      "expected_types": ["CVV"]
+    },
+    {
+      "name": "expiry_with_context",
+      "text": "有效期限12/25",
+      "expected_types": ["EXPIRY"]
+    },
+    {
+      "name": "email_no_context_needed",
+      "text": "email是user@example.com",
+      "expected_types": ["EMAIL_ADDRESS"]
+    },
+    {
+      "name": "amount_txn_transfer",
+      "text": "我要轉帳50000元到另一個帳戶",
+      "expected_types": ["AMOUNT_TXN"]
+    },
+    {
+      "name": "plain_amount_without_account_not_masked",
+      "text": "今年薪水大約50000元",
+      "expected_types": []
+    },
+    {
+      "name": "dob_slash_format",
+      "text": "出生日期1985/05/01",
+      "expected_types": ["DOB"]
+    },
+    {
+      "name": "staff_id_with_context",
+      "text": "行員工號E12345",
+      "expected_types": ["STAFF_ID"]
+    },
+    {
+      "name": "combined_card_and_account",
+      "text": "卡號4111111111111111轉到帳號1234567890",
+      "expected_types": ["TW_CREDIT_CARD", "TW_BANK_ACCOUNT"]
+    },
+    {
+      "name": "normalization_roc_year",
+      "text": "生日是民國七十四年五月一日",
+      "expected_types": []
+    },
+    {
+      "name": "normalization_full_width_digits",
+      "text": "電話０９１２３４５６７８",
+      "expected_types": ["TW_PHONE"]
+    },
+    {
+      "name": "empty_text",
+      "text": "",
+      "expected_types": []
+    },
+    {
+      "name": "plain_text_no_pii",
+      "text": "今天天氣很好",
+      "expected_types": []
+    }
+  ]
+}
