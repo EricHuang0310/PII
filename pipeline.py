@@ -81,17 +81,23 @@ class MaskingPipeline:
         score_threshold:          float = 0.60,
         mask_branch_code:         bool  = False,
         enable_llm_step:          bool  = False,
-        enable_ckip:              bool  = False,
         ckip_model:               str   = "bert-base",
         ckip_device:              int   = -1,
         asr_confidence_threshold: float = 0.70,
         nlp_engine_name:          str   = "spacy",
         spacy_model:              str   = "zh_core_web_sm",
     ):
+        """
+        銀行語音文字脫敏管線 v3。
+
+        Note: CKIP Transformers NER 為必要組件（中文 PERSON / LOCATION 偵測來源）。
+        Presidio 的 `EntityRecognizer.__init__` 會同步呼叫 `load()`，因此 CKIP 模型
+        會在 `MaskingPipeline` 初始化時即下載並載入（首次執行時較慢）。
+        執行前須安裝 `ckip-transformers` 與 `torch`。
+        """
         self.score_threshold          = score_threshold
         self.mask_branch_code         = mask_branch_code
         self.enable_llm_step          = enable_llm_step
-        self.enable_ckip              = enable_ckip
         self.ckip_model               = ckip_model
         self.ckip_device              = ckip_device
         self.asr_confidence_threshold = asr_confidence_threshold
@@ -288,7 +294,6 @@ class MaskingPipeline:
         registry = RecognizerRegistry(supported_languages=["zh", "en"])
         registry.load_predefined_recognizers(languages=["zh", "en"])
         for r in get_all_custom_recognizers(
-            enable_ckip=self.enable_ckip,
             ckip_model=self.ckip_model,
             ckip_device=self.ckip_device,
         ):
@@ -484,14 +489,15 @@ class MaskingPipeline:
 def demo():
     """
     快速驗證完整 pipeline。
-    使用 spaCy blank('zh') 作為 NLP engine，不需下載 zh_core_web_sm。
-    Regex-based recognizer 全部正常運作，僅 spaCy NER (PERSON/LOCATION) 不會觸發。
 
-    備註：要重現「CKIP × spaCy NER 在同 span 上重複偵測 PERSON/LOCATION」的場景，
-    需改用：
-        MaskingPipeline(enable_ckip=True, spacy_model="zh_core_web_sm")
-    此時 Step 4.5 的 Exact Duplicate Dedup 會把相同 span+entity_type 的重複
-    結果去重，並在 conflict_log 中記錄 reason="EXACT_DUP:...".
+    NLP engine 使用 spaCy blank('zh')，不需下載 zh_core_web_sm；spaCy 內建 NER
+    不會觸發，但 CKIP Transformers（v4 起為必要組件）會負責 PERSON/LOCATION 偵測。
+
+    首次執行時 CKIP 會下載並載入模型，需事先安裝：
+        pip install ckip-transformers torch
+    若安裝 `zh_core_web_sm` 並且 CKIP 與 spaCy NER 同時在相同 span 偵測到 PERSON
+    或 LOCATION，Step 4.5 的 Exact Duplicate Dedup 會自動去重，並在 conflict_log
+    中記錄 reason="EXACT_DUP:...".
     """
     import spacy
     import tempfile, os

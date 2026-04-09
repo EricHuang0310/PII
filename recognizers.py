@@ -218,8 +218,17 @@ class VerificationAnswerRecognizer(EntityRecognizer):
                 ))
         return results
 
-def get_all_custom_recognizers(enable_ckip=False, ckip_model="bert-base", ckip_device=-1):
-    recognizers = [
+def get_all_custom_recognizers(ckip_model="bert-base", ckip_device=-1):
+    """
+    回傳所有 custom recognizer。
+
+    v4 變更：CKIP Transformers NER 為必要組件（負責中文 PERSON / LOCATION
+    偵測），永遠註冊至 AnalyzerEngine。首次執行時會下載並載入模型，需事先
+    安裝 `ckip-transformers` 與 `torch`。
+    """
+    from ckip_recognizer import CkipNerRecognizer
+
+    return [
         TWPhoneRecognizer(), TWIDRecognizer(), PassportRecognizer(), DOBRecognizer(),
         TWCreditCardRecognizer(), TWBankAccountRecognizer(), ATMRefRecognizer(),
         LoanRefRecognizer(), TXNRefRecognizer(), PolicyNoRecognizer(),
@@ -228,10 +237,5 @@ def get_all_custom_recognizers(enable_ckip=False, ckip_model="bert-base", ckip_d
         AddressEnhancedRecognizer(),
         StaffIDRecognizer(), CampaignRecognizer(), BranchRecognizer(),
         VerificationAnswerRecognizer(),
+        CkipNerRecognizer(model=ckip_model, device=ckip_device),
     ]
-
-    if enable_ckip:
-        from ckip_recognizer import CkipNerRecognizer
-        recognizers.append(CkipNerRecognizer(model=ckip_model, device=ckip_device))
-
-    return recognizers

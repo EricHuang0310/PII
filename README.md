@@ -9,9 +9,9 @@
 ## 特色
 
 - **20+ 個客製 recognizer**：電話、身分證、護照、信用卡、銀行帳號、ATM/TXN/LOAN/POLICY 序號、OTP/CVV/PIN、DOB、員工編號、保單號、行銷代碼、三層地址偵測等
-- **雙重 NER**：Presidio 內建 spaCy NER + 可選 CKIP Transformers（`enable_ckip=True`），由 ConflictResolver 自動去重
+- **雙重 NER**：Presidio 內建 spaCy NER + **必要** CKIP Transformers NER（中文 PERSON / LOCATION 偵測主力），由 ConflictResolver 自動去重
 - **Conflict Resolver**：5 層決勝（Exact Dup → Contains → Risk Level → Span Length → Priority Score）
-- **一致假名**：同一 session 內同值只發一個 token（`[NAME_1]`、`[NAME_2]`…）
+- **固定 token 遮罩**：同類型實體一律輸出 base token（例：所有 PERSON 都變 `[NAME]`、所有 TW_CREDIT_CARD 都變 `[CARD]`），不帶 `_1`/`_2` 編號
 - **條件式金額**：`AMOUNT` 只在鄰近帳號/卡號時才遮罩；`AMOUNT_TXN` 由高風險交易動詞觸發即遮罩
 - **Diarization 降級**：無 speaker 標記時以問答 pattern 提升信心分
 - **可用度標記**：`USABLE` / `DEGRADED_MASKING` / `FALLBACK_MODE` / `NO_DIARIZATION` / `LOW_AUDIO_QUALITY`
@@ -19,17 +19,21 @@
 
 ## 安裝
 
+CKIP Transformers 為必要組件：
+
 ```bash
 pip install presidio-analyzer presidio-anonymizer spacy
-pip install openpyxl                     # 若需 Excel 批次
-pip install ckip-transformers torch      # 若需 CKIP NER
+pip install ckip-transformers torch      # 必要：中文 PERSON/LOCATION NER
+pip install openpyxl                     # 可選：Excel 批次
 ```
 
-中文 spaCy 模型（可選，若省略則內建 NER 不觸發，regex recognizer 仍正常）：
+中文 spaCy 模型（可選，若省略則 spaCy 內建 NER 不觸發，但 regex recognizer 與 CKIP 仍正常運作）：
 
 ```bash
 python -m spacy download zh_core_web_sm
 ```
+
+> CKIP 模型首次執行時會自動下載並常駐記憶體（預設 `bert-base`，可改用 `albert-base` / `bert-tiny`）。
 
 ## 快速開始
 
@@ -44,12 +48,12 @@ with MaskingPipeline(log_path="audit.csv") as p:
         session_id="S001",
         diarization_available=True,
     )
-    print(r.masked_text)       # 我叫[NAME_1],卡號[CARD_1]
+    print(r.masked_text)       # 我叫[NAME],卡號[CARD]
     print(r.entities_found)    # [PERSON, TW_CREDIT_CARD]
     print(r.usability_tag)     # USABLE / DEGRADED_MASKING / ...
 ```
 
-### 對話批次遮罩（session 內假名一致）
+### 對話批次遮罩
 
 ```python
 from pipeline import MaskingPipeline, DialogueTurn
@@ -60,17 +64,23 @@ turns = [
     DialogueTurn(speaker="CUSTOMER", text="我要轉帳50000元到12345678901234"),
 ]
 
-with MaskingPipeline(log_path="audit.csv", enable_ckip=True) as p:
+with MaskingPipeline(log_path="audit.csv") as p:
     results = p.mask_dialogue(turns, session_id="S001")
     for r in results:
         print(r.masked_text)
 ```
 
+> 所有 PERSON 都遮為 `[NAME]`、所有 `TW_BANK_ACCOUNT` 都遮為 `[ACCOUNT]`，
+> 不會出現 `_1` / `_2` 編號。`MaskingResult.pseudonym_map` 仍會列出哪些
+> 原始值被遮為同一 token，供 audit 檢視。
+
 ### 內建 demo
 
 ```bash
-python pipeline.py        # 使用 spacy.blank("zh")，免下載模型
+python pipeline.py        # 使用 spacy.blank("zh")，CKIP 負責 PERSON/LOCATION
 ```
+
+> 首次執行時 CKIP 會下載並載入 NER 模型，需事先 `pip install ckip-transformers torch`。
 
 ## 架構：7 步驟 Pipeline
 
@@ -79,11 +89,11 @@ python pipeline.py        # 使用 spacy.blank("zh")，免下載模型
 | Step | 作用 | 關鍵模組 |
 |---|---|---|
 | 0 | 正規化（NFC、全形半形、中文數字、民國年、STT 語助詞、空白） | `normalizer.normalize` |
-| 1+2 | Presidio 分析（regex + 內建 spaCy NER + 可選 CKIP） | `recognizers.get_all_custom_recognizers` |
+| 1+2 | Presidio 分析（regex + 內建 spaCy NER + CKIP NER） | `recognizers.get_all_custom_recognizers` |
 | 3 | 銀行規則（條件式 AMOUNT、speaker-aware boost） | `pipeline._apply_bank_rules` |
 | 4 | LLM 補充偵測（可選） | `pipeline._run_llm_step` |
 | 4.5 | 衝突解決 | `conflict_resolver.ConflictResolver` |
-| 5 | 假名一致性替換（per-span） | `pseudonym.PseudonymTracker` |
+| 5 | Token 替換（per-span，統一 base token） | `pseudonym.PseudonymTracker` |
 | 6 | Audit log + 可用度標記 | `audit.AuditLogger` |
 
 ### ConflictResolver 決勝順序
@@ -111,7 +121,7 @@ python pipeline.py        # 使用 spacy.blank("zh")，免下載模型
 1. `config.py` — `TOKEN_MAP`、`ENTITY_PRIORITY`、`ENTITY_RISK_LEVEL`
 2. `recognizers.py` — 新 recognizer class + 加入 `get_all_custom_recognizers`
 3. `audit.py` — `_TYPE_DESC` 中文描述
-4. （可選）`PSEUDONYM_ENTITIES` — 若需 session 內一致假名
+4. （可選）`PSEUDONYM_ENTITIES` — 若需將該實體的原始值列入 `pseudonym_map` 供 audit 檢視
 
 ## MaskingResult 欄位
 
@@ -162,8 +172,12 @@ conflict_resolved, diarization_available, usability_tag, timestamp
 - **`pipeline._compute_usability`** — `in_fallback` 參數冗餘已移除；直接以 `diarization_available` + 是否偵測到問句分支
 - **`ConflictResolver.resolve` Step 0** — `(start, end, entity_type)` 完全相同時的 dedup，處理 CKIP × spaCy 重複偵測；`conflict_log` 存放 `RecognizerResult` 物件（非 entity_type 字串）以便 `pipeline.py` 以 `id(winner)` 追蹤 audit 的 `conflict_resolved` 欄位
 - **`normalizer.normalize`** — 中文數字必須在民國年之前執行；`_parse_zh_number` 支援十/百/千位值；`_clean_stt_repeats` 只壓縮 `_STT_FILLER_CHARS` 中的語助詞
-- **`PseudonymTracker`** — 編號從 `_1` 開始（非 `_0`）
 - **`mask_dialogue`** — `diarization_available` 以「labeled-speaker 覆蓋率 ≥ threshold」判斷，非 `any(...)`
+
+## v4 變更
+
+- **固定 token 遮罩**：`PseudonymTracker.resolve()` 一律回傳 `base_token`，不再累計 `_1`/`_2` 編號。`pseudonym_map` 仍保留原始值對應（同值只列一次），供 audit 使用。
+- **CKIP 為必要組件**：移除 `MaskingPipeline.enable_ckip` 參數；`get_all_custom_recognizers` 永遠註冊 `CkipNerRecognizer`。若未安裝 `ckip-transformers`，首次 `mask()` 呼叫會拋出 `ImportError`。
 
 ## 檔案結構
 
