@@ -139,6 +139,8 @@ TXN_CONTEXT        = ["交易", "流水號", "序號", "transaction", "txn", "re
 ATM_CONTEXT        = ["ATM", "交易序號", "自動提款", "參考號碼"]
 CAMPAIGN_CONTEXT   = ["活動", "專案", "行銷", "campaign", "promo"]
 VERIFICATION_CONTEXT=["母親", "媽媽", "驗證問題", "安全問題", "母親姓名", "母親生日"]
+POLICY_CONTEXT     = ["保單", "保險單", "policy", "投保"]
+BRANCH_CONTEXT     = ["分行", "分行代碼", "branch", "分店"]
 
 # ══════════════════════════════════════════════════════════════
 # ★v3 地址強化三層設定

@@ -57,7 +57,7 @@ class AuditLogger:
         "LOAN_REF":"貸款合約號","POLICY_NO":"保單號","AMOUNT":"交易金額（條件式）",
         "AMOUNT_TXN":"高風險交易金額","OTP":"OTP驗證碼","EXPIRY":"信用卡有效期限",
         "CVV":"CVV安全碼","PIN":"PIN密碼","STAFF_ID":"員工編號",
-        "CAMPAIGN":"行銷專案代碼","BRANCH":"分行代碼",
+        "CAMPAIGN":"行銷專案代碼","BRANCH":"分行代碼","ORG":"機構名稱",
     }
 
     @classmethod

@@ -99,8 +99,6 @@ class MaskingPipeline:
         self._analyzer   = self._build_analyzer(nlp_engine_name, spacy_model)
         self._anonymizer = AnonymizerEngine()
         self._resolver   = ConflictResolver()
-        self.enable_ckip = enable_ckip
-        self.ckip_device = ckip_device
 
         self._llm_analyzer = None
         if enable_llm_step:
@@ -193,8 +191,9 @@ class MaskingPipeline:
         # Step 6：Audit Log
         if self._logger:
             # BUG 2 修正：正確計算「有被 resolve 的 result id 集合」
-            # conflict_log 元素格式由 ConflictResolver.resolve() 決定：
-            # 假設為 (winner_result, loser_result, reason) 的 tuple
+            # conflict_log 的每筆 entry 格式為
+            # (winner_result: RecognizerResult, loser_result: RecognizerResult, reason: str)
+            # —— 詳見 ConflictResolver.resolve() 的回傳型別註解
             resolved_ids: Set[int] = set()
             for entry in conflict_log:
                 if entry:
@@ -357,6 +356,10 @@ class MaskingPipeline:
         ★v3 強化：任何 speaker 只要包含敏感資料就脫敏。
         Diarization 的作用僅是輔助「問答配對」偵測，
         不是「只脫敏 CUSTOMER 發言」。
+
+        `speaker` 參數目前未參與決策（設計刻意），保留在簽名中以便
+        未來若銀行規範改為「僅客戶端遮罩」或「客服端放寬」時可就地切換，
+        而不需要更動所有 call site。
         """
         if not diarization_available:
             # 降級策略：問句後 N 字元內的結果提升信心分
@@ -436,11 +439,27 @@ class MaskingPipeline:
         primary:   List[RecognizerResult],
         secondary: List[RecognizerResult],
     ) -> List[RecognizerResult]:
-        seen_spans = {(r.start, r.end, r.entity_type) for r in primary}
-        return primary + [
-            r for r in secondary
-            if (r.start, r.end, r.entity_type) not in seen_spans
-        ]
+        """
+        合併 primary (Presidio) 與 secondary (LLM) 結果。
+
+        對相同 (start, end, entity_type) 的 span：保留 score 較高者；
+        同分保留 primary（維持 Presidio 為主、LLM 為輔）。
+        """
+        by_key: Dict[Tuple[int, int, str], RecognizerResult] = {}
+        order: List[Tuple[int, int, str]] = []
+        for r in primary:
+            key = (r.start, r.end, r.entity_type)
+            if key not in by_key:
+                order.append(key)
+                by_key[key] = r
+        for r in secondary:
+            key = (r.start, r.end, r.entity_type)
+            if key not in by_key:
+                order.append(key)
+                by_key[key] = r
+            elif r.score > by_key[key].score:
+                by_key[key] = r
+        return [by_key[k] for k in order]
 
     def _run_llm_step(self, text: str) -> List[RecognizerResult]:
         try:
@@ -467,6 +486,12 @@ def demo():
     快速驗證完整 pipeline。
     使用 spaCy blank('zh') 作為 NLP engine，不需下載 zh_core_web_sm。
     Regex-based recognizer 全部正常運作，僅 spaCy NER (PERSON/LOCATION) 不會觸發。
+
+    備註：要重現「CKIP × spaCy NER 在同 span 上重複偵測 PERSON/LOCATION」的場景，
+    需改用：
+        MaskingPipeline(enable_ckip=True, spacy_model="zh_core_web_sm")
+    此時 Step 4.5 的 Exact Duplicate Dedup 會把相同 span+entity_type 的重複
+    結果去重，並在 conflict_log 中記錄 reason="EXACT_DUP:...".
     """
     import spacy
     import tempfile, os
@@ -540,7 +565,11 @@ def demo():
                 print(f"  實體：{ents}")
             if result.conflict_log:
                 for entry in result.conflict_log:
-                    print(f"  衝突：{entry[0]} 勝 {entry[1]} ({entry[2]})")
+                    winner, loser, reason = entry
+                    print(
+                        f"  衝突：{winner.entity_type} 勝 {loser.entity_type} "
+                        f"({reason})"
+                    )
             print(f"  可用度：{result.usability_tag}")
  
     # ── 假名對照表 ────────────────────────────────────────
