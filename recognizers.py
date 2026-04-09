@@ -11,6 +11,7 @@ from config import (
     OTP_CONTEXT, CVV_CONTEXT, EXPIRY_CONTEXT, PIN_CONTEXT, DOB_CONTEXT,
     AMOUNT_CONTEXT, STAFF_ID_CONTEXT, PASSPORT_CONTEXT, LOAN_CONTEXT,
     TXN_CONTEXT, ATM_CONTEXT, CAMPAIGN_CONTEXT, VERIFICATION_CONTEXT,
+    POLICY_CONTEXT, BRANCH_CONTEXT,
     HIGH_RISK_TXN_VERBS, ADMIN_DISTRICTS, CHAIN_LANDMARKS,
     LANDMARK_SUFFIX_PATTERN, PROXIMITY_PATTERN, FALLBACK_ANSWER_WINDOW_CHARS,
 )
@@ -78,7 +79,7 @@ class PolicyNoRecognizer(PatternRecognizer):
         Pattern("POLICY_NUM",   r"P\d{6,10}",     score=0.75),
     ]
     def __init__(self):
-        super().__init__(supported_entity="POLICY_NO", patterns=self.PATTERNS, context=["保單","保險單","policy","投保"], supported_language="zh")
+        super().__init__(supported_entity="POLICY_NO", patterns=self.PATTERNS, context=POLICY_CONTEXT, supported_language="zh")
 
 class AmountRecognizer(PatternRecognizer):
     PATTERNS = [
@@ -195,7 +196,7 @@ class BranchRecognizer(PatternRecognizer):
         Pattern("BRANCH_ALPHA", r"[A-Z]{2,4}\d{2,4}", score=0.55),
     ]
     def __init__(self):
-        super().__init__(supported_entity="BRANCH", patterns=self.PATTERNS, context=["分行","分行代碼","branch","分店"], supported_language="zh")
+        super().__init__(supported_entity="BRANCH", patterns=self.PATTERNS, context=BRANCH_CONTEXT, supported_language="zh")
 
 class VerificationAnswerRecognizer(EntityRecognizer):
     def __init__(self):

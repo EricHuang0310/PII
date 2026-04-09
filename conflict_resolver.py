@@ -6,8 +6,12 @@
 解決的問題：
   1. 數字類規則互相衝突（OTP/PIN/CVV/金額/帳號/卡號 完全重疊的數字空間）
   2. Regex / NER / LLM 命中重疊區段時的決策
+  3. CKIP × Presidio 內建 spaCy NER × AddressEnhancedRecognizer 在相同 span
+     上重複偵測 PERSON / LOCATION（相同 start/end/entity_type 的純重複）
 
 解決策略（依序）：
+  0. Exact Duplicate Dedup     — (start, end, entity_type) 完全相同時只保留 score 最高者
+                                 （同分保留先出現者），其餘直接丟棄並記 conflict_log
   1. Longest Match Wins        — 長度較長的 span 優先
   2. Risk Level Priority       — 同長度時，風險等級較高者優先
   3. Entity Priority Score     — 同風險等級時，依 ENTITY_PRIORITY 順序決定
@@ -22,6 +26,10 @@ from typing import Dict, List, Optional, Tuple
 from presidio_analyzer import RecognizerResult
 
 from config import ENTITY_PRIORITY, ENTITY_RISK_LEVEL
+
+
+# Presidio 關鍵字觸發後的分數門檻（用於 _has_keyword_context 判斷）
+_KEYWORD_SCORE_THRESHOLD: float = 0.70
 
 
 # ══════════════════════════════════════════════════════════════
@@ -85,9 +93,9 @@ def _has_keyword_context(
     """在匹配位置前後 window 字元內，是否出現關鍵字（從 analysis_explanation 取得）。"""
     if result.analysis_explanation and result.analysis_explanation.pattern_name:
         # Presidio 已做過 context 提升，視為有關鍵字
-        return result.score > 0.7
+        return result.score >= _KEYWORD_SCORE_THRESHOLD
     # 退而根據分數判斷（關鍵字命中後 Presidio 會提升分數）
-    return result.score >= 0.70
+    return result.score >= _KEYWORD_SCORE_THRESHOLD
 
 
 class ConflictResolver:
@@ -103,7 +111,10 @@ class ConflictResolver:
         self,
         results: List[RecognizerResult],
         text: str,
-    ) -> Tuple[List[RecognizerResult], List[Tuple[str, str, str]]]:
+    ) -> Tuple[
+        List[RecognizerResult],
+        List[Tuple[RecognizerResult, RecognizerResult, str]],
+    ]:
         """
         對 Presidio 分析結果進行衝突解決。
 
@@ -114,10 +125,42 @@ class ConflictResolver:
         Returns:
             (clean_results, conflict_log)
             - clean_results:  去除衝突後的最終結果
-            - conflict_log:   [(winner_type, loser_type, reason)] 供 Audit 使用
+            - conflict_log:   [(winner_result, loser_result, reason)] — 存放
+                              實際的 RecognizerResult 物件（非 entity_type 字串），
+                              pipeline 端以 id(winner) 追蹤「勝出」記錄到 audit。
         """
         if not results:
             return [], []
+
+        conflict_log: List[Tuple[RecognizerResult, RecognizerResult, str]] = []
+
+        # Step 0：Exact Duplicate Dedup
+        # 處理 CKIP × spaCy NER × AddressEnhancedRecognizer 對相同 span + 相同
+        # entity_type 的純重複偵測。每組只保留 score 最高者，同分保留先出現者。
+        deduped: List[RecognizerResult] = []
+        winner_by_key: Dict[Tuple[int, int, str], RecognizerResult] = {}
+        for r in results:
+            key = (r.start, r.end, r.entity_type)
+            existing = winner_by_key.get(key)
+            if existing is None:
+                winner_by_key[key] = r
+                deduped.append(r)
+                continue
+            # 分數高者勝，同分保留先出現者（即 existing）
+            if r.score > existing.score:
+                # 新的 r 取代既有勝者：將 existing 降為落敗
+                conflict_log.append((r, existing, "EXACT_DUP:higher_score_wins"))
+                winner_by_key[key] = r
+                # 在 deduped 中用 r 取代 existing（維持原本位置）
+                deduped[deduped.index(existing)] = r
+            else:
+                # 既有勝者保留；r 落敗
+                reason = (
+                    "EXACT_DUP:higher_score_wins"
+                    if existing.score > r.score
+                    else "EXACT_DUP:first_wins"
+                )
+                conflict_log.append((existing, r, reason))
 
         # Step A：計算每個 result 的優先級分數
         scored = [
@@ -128,15 +171,14 @@ class ConflictResolver:
                 ),
                 has_keyword=_has_keyword_context(r, text),
             )
-            for r in results
+            for r in deduped
         ]
 
         # Step B：依 start 位置排序，相同 start 時長 span 優先
         scored.sort(key=lambda s: (s.start, -s.span_length, -s.priority_score))
 
         # Step C：依衝突類型處理
-        kept:         List[ScoredResult] = []
-        conflict_log: List[Tuple[str, str, str]] = []
+        kept: List[ScoredResult] = []
 
         for current in scored:
             overlapping = [k for k in kept if self._overlaps(current, k)]
@@ -155,23 +197,10 @@ class ConflictResolver:
                 kept = [k for k in kept if k is not strongest]
                 current.conflict_resolved = True
                 kept.append(current)
-                conflict_log.append((
-                    current.entity_type,
-                    strongest.entity_type,
-                    reason,
-                ))
+                conflict_log.append((current.result, strongest.result, reason))
             else:
                 # current 落敗：直接丟棄
-                conflict_log.append((
-                    strongest.entity_type,
-                    current.entity_type,
-                    reason,
-                ))
-
-        # Step D：標記有參與衝突解決的結果
-        for s in kept:
-            if s.conflict_resolved:
-                s.result.score = min(1.0, s.result.score + 0.05)
+                conflict_log.append((strongest.result, current.result, reason))
 
         return [s.result for s in kept], conflict_log
 
