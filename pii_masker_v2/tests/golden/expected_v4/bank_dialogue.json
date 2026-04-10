@@ -1,0 +1,185 @@
+{
+  "amount_txn_transfer": {
+    "detection_count": 1,
+    "entity_types": [
+      "AMOUNT_TXN"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "我要轉帳[AMOUNT_TXN]到另一個帳戶",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "bank_account_with_context": {
+    "detection_count": 1,
+    "entity_types": [
+      "TW_BANK_ACCOUNT"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "帳號[ACCOUNT]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "combined_card_and_account": {
+    "detection_count": 2,
+    "entity_types": [
+      "TW_BANK_ACCOUNT",
+      "TW_CREDIT_CARD"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "卡號[CARD]轉到帳號[ACCOUNT]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "credit_card_with_context": {
+    "detection_count": 1,
+    "entity_types": [
+      "TW_CREDIT_CARD"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "卡號[CARD]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "cvv_with_context": {
+    "detection_count": 1,
+    "entity_types": [
+      "CVV"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "安全碼[CVV]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "dob_slash_format": {
+    "detection_count": 1,
+    "entity_types": [
+      "DOB"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "出生日期[DOB]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "email_no_context_needed": {
+    "detection_count": 1,
+    "entity_types": [
+      "EMAIL_ADDRESS"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "email是[EMAIL]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "empty_text": {
+    "detection_count": 0,
+    "entity_types": [],
+    "leak_scan_passed": true,
+    "masked_text": "",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "expiry_with_context": {
+    "detection_count": 1,
+    "entity_types": [
+      "EXPIRY"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "有效期限[EXPIRY]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "normalization_full_width_digits": {
+    "detection_count": 1,
+    "entity_types": [
+      "TW_PHONE"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "電話[PHONE]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "normalization_roc_year": {
+    "detection_count": 0,
+    "entity_types": [],
+    "leak_scan_passed": true,
+    "masked_text": "生日是1985年5月1日",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "otp_with_context": {
+    "detection_count": 1,
+    "entity_types": [
+      "OTP"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "驗證碼是[OTP]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "passport_with_context": {
+    "detection_count": 1,
+    "entity_types": [
+      "PASSPORT"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "護照號碼是[PASSPORT]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "phone_landline_with_context": {
+    "detection_count": 1,
+    "entity_types": [
+      "TW_PHONE"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "公司電話[PHONE]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "phone_mobile_with_context": {
+    "detection_count": 1,
+    "entity_types": [
+      "TW_PHONE"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "我的電話是[PHONE]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "plain_amount_without_account_not_masked": {
+    "detection_count": 0,
+    "entity_types": [],
+    "leak_scan_passed": true,
+    "masked_text": "今年薪水大約50000元",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "plain_text_no_pii": {
+    "detection_count": 0,
+    "entity_types": [],
+    "leak_scan_passed": true,
+    "masked_text": "今天天氣很好",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "staff_id_with_context": {
+    "detection_count": 1,
+    "entity_types": [
+      "STAFF_ID"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "行員工號[STAFF_ID]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  },
+  "tw_id_number_with_context": {
+    "detection_count": 1,
+    "entity_types": [
+      "TW_ID_NUMBER"
+    ],
+    "leak_scan_passed": true,
+    "masked_text": "身分證字號[ID]",
+    "pipeline_version": "2.0.0",
+    "policy_version": "v4.1.0"
+  }
+}
