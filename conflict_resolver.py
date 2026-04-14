@@ -74,15 +74,29 @@ def _compute_priority_score(
     has_keyword: bool,
 ) -> float:
     """
-    計算最終優先級分數。
-    公式：priority×0.4 + risk_level×10×0.4 + presidio_score×10×0.1 + keyword_bonus×0.1
-    """
-    priority   = ENTITY_PRIORITY.get(result.entity_type, 0)
-    risk       = ENTITY_RISK_LEVEL.get(result.entity_type, 0) * 10
-    p_score    = result.score * 10
-    kw_bonus   = 10.0 if has_keyword else 0.0
+    計算最終優先級分數（issue #4 修正）。
 
-    return priority * 0.4 + risk * 0.4 + p_score * 0.1 + kw_bonus * 0.1
+    舊公式 `priority×0.4 + risk×10×0.4 + score×10×0.1 + kw×0.1`：
+      - priority (25-100) × 0.4 = 10-40   ← 主導
+      - risk (1-5) × 10 × 0.4 = 4-20      ← 被壓扁
+    然而 `_resolve_pair` Step 2a 先以 risk_level 決勝，當「選最強對手」時
+    risk 反被 priority 蓋過（實例：OTP(risk=5) < PERSON(risk=4)）。
+
+    新公式：risk 主導、priority 次之、score 第三、keyword 微調
+      priority_score = risk × 20 + priority × 0.1 + score × 5 + (kw ? 2 : 0)
+
+      - risk (1-5) × 20 = 20-100 （一個 risk step = 20 分）
+      - priority (25-100) × 0.1 = 2.5-10 （< 一個 risk step，只能在同 risk 內決勝）
+      - score (0-1) × 5 = 0-5
+      - keyword bonus = 2 或 0 （最小微調）
+
+    保證：高 risk 無 keyword > 低 risk + keyword（20 > 2）。
+    """
+    priority = ENTITY_PRIORITY.get(result.entity_type, 0)
+    risk     = ENTITY_RISK_LEVEL.get(result.entity_type, 0)
+    kw_bonus = 2.0 if has_keyword else 0.0
+
+    return risk * 20.0 + priority * 0.1 + result.score * 5.0 + kw_bonus
 
 
 def _has_keyword_context(result: RecognizerResult) -> bool:
@@ -192,7 +206,9 @@ class ConflictResolver:
         scored.sort(key=lambda s: (s.start, -s.span_length, -s.priority_score))
 
         # Step C：依衝突類型處理
+        # issue #7：每次衝突附上 round index，conflict_log 可重建決策順序
         kept: List[ScoredResult] = []
+        round_n = 0
 
         for current in scored:
             overlapping = [k for k in kept if self._overlaps(current, k)]
@@ -201,10 +217,17 @@ class ConflictResolver:
                 kept.append(current)
                 continue
 
+            round_n += 1
             # 找出衝突中最強的對手
             strongest = max(overlapping, key=lambda s: s.priority_score)
 
             winner, loser, reason = self._resolve_pair(current, strongest)
+            # issue #5：exact (start,end) 相同但 type 不同 → 明確標記
+            if (current.start == strongest.start and
+                current.end == strongest.end and
+                current.entity_type != strongest.entity_type):
+                reason = f"CROSS_TYPE_SAME_SPAN:{reason}"
+            reason = f"[R{round_n}] {reason}"
 
             if winner is current:
                 # current 勝出：替換 strongest，保留其他未衝突的

@@ -135,6 +135,66 @@ def test_chain_conflict_same_start_multiple_kept():
     assert kept[0] is long_
 
 
+# ══════════════════════════════════════════════════════════════
+# Issue #5: cross-type same-span 明確標記
+# ══════════════════════════════════════════════════════════════
+
+def test_cross_type_same_span_logged():
+    """
+    不同 entity_type 但 (start, end) 完全相同時，conflict_log 的 reason
+    應以 CROSS_TYPE_SAME_SPAN: 前綴標明，方便 audit 檢索。
+    """
+    r = ConflictResolver()
+    a = mk("PERSON", 0, 5, score=0.80)
+    b = mk("LOCATION", 0, 5, score=0.80)
+    kept, log = r.resolve([a, b], "x" * 10)
+    assert len(kept) == 1
+    assert any("CROSS_TYPE_SAME_SPAN" in entry[2] for entry in log), (
+        f"未見 CROSS_TYPE_SAME_SPAN 標記：{[e[2] for e in log]}"
+    )
+
+
+def test_same_type_same_span_not_marked_as_cross_type():
+    """同 type 同 span 走 Step 0 dedup，不應有 CROSS_TYPE 標記。"""
+    r = ConflictResolver()
+    a = mk("PERSON", 0, 5, score=0.80)
+    b = mk("PERSON", 0, 5, score=0.90)
+    _, log = r.resolve([a, b], "x" * 10)
+    for entry in log:
+        assert "CROSS_TYPE_SAME_SPAN" not in entry[2]
+
+
+# ══════════════════════════════════════════════════════════════
+# Issue #7: conflict_log round index
+# ══════════════════════════════════════════════════════════════
+
+def test_conflict_log_contains_round_index():
+    """Step C 產生的衝突紀錄應含 [R{n}] 前綴。"""
+    r = ConflictResolver()
+    a = mk("PERSON", 0, 5, score=0.80)
+    b = mk("LOCATION", 0, 5, score=0.80)
+    _, log = r.resolve([a, b], "x" * 10)
+    step_c_entries = [e for e in log if "[R" in e[2]]
+    assert step_c_entries, f"Step C 衝突應有 round index：{[e[2] for e in log]}"
+
+
+def test_conflict_log_round_index_monotonic():
+    """多輪衝突時 round index 應遞增。"""
+    r = ConflictResolver()
+    # 三組獨立衝突
+    spans = [
+        (mk("PERSON", 0, 4, 0.8), mk("LOCATION", 0, 4, 0.8)),
+        (mk("PERSON", 10, 14, 0.8), mk("LOCATION", 10, 14, 0.8)),
+        (mk("PERSON", 20, 24, 0.8), mk("LOCATION", 20, 24, 0.8)),
+    ]
+    raw = [x for pair in spans for x in pair]
+    _, log = r.resolve(raw, "x" * 30)
+    import re
+    rounds = [int(m.group(1)) for e in log
+              if (m := re.search(r"\[R(\d+)\]", e[2]))]
+    assert rounds == sorted(rounds), f"round index 非遞增：{rounds}"
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))
