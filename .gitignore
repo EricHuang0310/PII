@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Pipeline outputs (regenerated on each run)
+audit_log.csv
+demo_audit_log.csv
+*.log
+
+# HuggingFace model cache (should live in user home, not repo)
+.cache/
