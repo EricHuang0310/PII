@@ -109,7 +109,7 @@ class CkipNerRecognizer(EntityRecognizer):
             )
 
         print(f"[CkipNerRecognizer] 載入模型 {self._model_name!r} (device={self._device})...")
-        self._driver = CkipNerChunker(model_name=self._model_name, device=self._device)
+        self._driver = CkipNerChunker(model=self._model_name, device=self._device)
 
         # 快取到類別層級
         CkipNerRecognizer._shared_driver = self._driver
@@ -188,7 +188,7 @@ class CkipNerRecognizer(EntityRecognizer):
 # ══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    recognizer = CkipNerRecognizer(model='/raid2/model/ckip/bert-base-chinese-ner', device=-1)
+    recognizer = CkipNerRecognizer(model='bert-base', device=-1)
     recognizer.load()
 
     test_texts = [

@@ -85,16 +85,30 @@ def _compute_priority_score(
     return priority * 0.4 + risk * 0.4 + p_score * 0.1 + kw_bonus * 0.1
 
 
-def _has_keyword_context(
-    result: RecognizerResult,
-    text: str,
-    window: int = 20,
-) -> bool:
-    """在匹配位置前後 window 字元內，是否出現關鍵字（從 analysis_explanation 取得）。"""
-    if result.analysis_explanation and result.analysis_explanation.pattern_name:
-        # Presidio 已做過 context 提升，視為有關鍵字
-        return result.score >= _KEYWORD_SCORE_THRESHOLD
-    # 退而根據分數判斷（關鍵字命中後 Presidio 會提升分數）
+def _has_keyword_context(result: RecognizerResult) -> bool:
+    """
+    判斷 result 是否有 context keyword 支撐。
+
+    issue #3 修正：舊版兩個分支都只是 `score >= threshold`，text/window
+    參數未使用，名實不符。新版改以 Presidio 的真實 context 訊號為準：
+
+      1. `score_context_improvement > 0` — Presidio 因 context word 實際加過分
+      2. `supportive_context_word` 非空 — Presidio 指出了觸發加分的關鍵字
+      3. 以上皆無但 `score >= _KEYWORD_SCORE_THRESHOLD` — fallback 相容
+
+    若 `analysis_explanation` 完全缺失，回傳 False（無證據不推斷）。
+    """
+    exp = result.analysis_explanation
+    if exp is None:
+        return False
+
+    improvement = getattr(exp, "score_context_improvement", 0.0) or 0.0
+    if improvement > 0.0:
+        return True
+
+    if getattr(exp, "supportive_context_word", None):
+        return True
+
     return result.score >= _KEYWORD_SCORE_THRESHOLD
 
 
@@ -163,16 +177,16 @@ class ConflictResolver:
                 conflict_log.append((existing, r, reason))
 
         # Step A：計算每個 result 的優先級分數
-        scored = [
-            ScoredResult(
+        # issue #3 修正：_has_keyword_context 不再需要 text / window，
+        # 直接從 result.analysis_explanation 讀 Presidio 的 context 訊號
+        scored = []
+        for r in deduped:
+            has_kw = _has_keyword_context(r)
+            scored.append(ScoredResult(
                 result=r,
-                priority_score=_compute_priority_score(
-                    r, _has_keyword_context(r, text)
-                ),
-                has_keyword=_has_keyword_context(r, text),
-            )
-            for r in deduped
-        ]
+                priority_score=_compute_priority_score(r, has_kw),
+                has_keyword=has_kw,
+            ))
 
         # Step B：依 start 位置排序，相同 start 時長 span 優先
         scored.sort(key=lambda s: (s.start, -s.span_length, -s.priority_score))

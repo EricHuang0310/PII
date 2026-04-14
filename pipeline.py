@@ -14,6 +14,8 @@
                  → 移除冗餘的 in_fallback 參數，直接以 diarization_available 判斷
 """
 import re
+import warnings
+warnings.filterwarnings("ignore")
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -365,21 +367,44 @@ class MaskingPipeline:
         `speaker` 參數目前未參與決策（設計刻意），保留在簽名中以便
         未來若銀行規範改為「僅客戶端遮罩」或「客服端放寬」時可就地切換，
         而不需要更動所有 call site。
+
+        冪等性保證（issue #2 修正）：
+          以前版本直接 mutate `r.score`，導致多個問句 window 覆蓋同一 result
+          時會重複累加，且同一 turn 重跑結果不一致。本版改為：
+            - 收集每個 result 的 Q/A boost（取 max，不累加）
+            - Q + A 兩類 boost 可並存（視為獨立信號）
+            - 僅對需要 boost 的 result 建立新物件，不修改輸入
         """
-        if not diarization_available:
-            # 降級策略：問句後 N 字元內的結果提升信心分
-            for qm in self._agent_q_pattern.finditer(text):
-                window_end = qm.end() + FALLBACK_ANSWER_WINDOW_CHARS
+        if diarization_available:
+            return results
+
+        import copy as _copy
+
+        q_boost: Dict[int, float] = {}
+        a_boost: Dict[int, float] = {}
+
+        for qm in self._agent_q_pattern.finditer(text):
+            window_end = qm.end() + FALLBACK_ANSWER_WINDOW_CHARS
+            for r in results:
+                if qm.end() <= r.start <= window_end:
+                    q_boost[id(r)] = max(q_boost.get(id(r), 0.0), 0.15)
+
+        for ap in self._answer_patterns:
+            for am in ap.finditer(text):
                 for r in results:
-                    if qm.end() <= r.start <= window_end:
-                        r.score = min(1.0, r.score + 0.15)
-            # 回答 pattern 輔助提升
-            for ap in self._answer_patterns:
-                for am in ap.finditer(text):
-                    for r in results:
-                        if am.start() <= r.start < am.end():
-                            r.score = min(1.0, r.score + 0.10)
-        return results
+                    if am.start() <= r.start < am.end():
+                        a_boost[id(r)] = max(a_boost.get(id(r), 0.0), 0.10)
+
+        out: List[RecognizerResult] = []
+        for r in results:
+            total = q_boost.get(id(r), 0.0) + a_boost.get(id(r), 0.0)
+            if total > 0.0:
+                new_r = _copy.copy(r)
+                new_r.score = min(1.0, r.score + total)
+                out.append(new_r)
+            else:
+                out.append(r)
+        return out
 
     @staticmethod
     def _apply_per_span_replacement(
@@ -490,25 +515,26 @@ def demo():
     """
     快速驗證完整 pipeline。
 
-    NLP engine 使用 spaCy blank('zh')，不需下載 zh_core_web_sm；spaCy 內建 NER
-    不會觸發，但 CKIP Transformers（v4 起為必要組件）會負責 PERSON/LOCATION 偵測。
+    NLP engine 使用 spaCy `zh_core_web_sm`，需先下載：
+        python -m spacy download zh_core_web_sm
 
     首次執行時 CKIP 會下載並載入模型，需事先安裝：
         pip install ckip-transformers torch
-    若安裝 `zh_core_web_sm` 並且 CKIP 與 spaCy NER 同時在相同 span 偵測到 PERSON
-    或 LOCATION，Step 4.5 的 Exact Duplicate Dedup 會自動去重，並在 conflict_log
+    若 CKIP 與 spaCy NER 同時在相同 span 偵測到 PERSON 或 LOCATION，
+    Step 4.5 的 Exact Duplicate Dedup 會自動去重，並在 conflict_log
     中記錄 reason="EXACT_DUP:...".
     """
     import spacy
-    import tempfile, os
- 
-    # ── 建立 blank 中文模型到暫存目錄 ─────────────────────
-    tmpdir = tempfile.mkdtemp()
-    blank_path = os.path.join(tmpdir, "blank_zh")
-    nlp = spacy.blank("zh")
-    nlp.to_disk(blank_path)
-    print(f"[INFO] 使用 spaCy blank('zh') 模型：{blank_path}")
- 
+
+    # ── 確認 spaCy 中文模型已安裝 ─────────────────────────
+    try:
+        spacy.load("zh_core_web_sm")
+    except OSError:
+        raise RuntimeError(
+            "未安裝 zh_core_web_sm，請執行："
+            "python -m spacy download zh_core_web_sm"
+        )
+
     # ── 模擬對話 ──────────────────────────────────────────
     test_turns = [
         DialogueTurn(speaker="AGENT",    text="請問您的大名是？"),
@@ -527,19 +553,19 @@ def demo():
         DialogueTurn(speaker="CUSTOMER", text="生日是民國七十四年五月一日"),
         DialogueTurn(speaker="CUSTOMER", text="我住在台北市忠孝東路100號，Costco旁邊"),
         DialogueTurn(speaker="AGENT",    text="請問母親姓名是？"),
-        DialogueTurn(speaker="CUSTOMER", text="母親姓名是陳美玲"),
+        DialogueTurn(speaker="CUSTOMER", text="母親的姓名是陳美玲"),
     ]
  
     print("=" * 70)
-    print("  PII 脫敏管線 v3 — Demo（blank 中文模型）")
+    print("  PII 脫敏管線 v3 — Demo (zh_core_web_sm)")
     print("=" * 70)
- 
+
     # ── 初始化 ────────────────────────────────────────────
     try:
         pipeline = MaskingPipeline(
             log_path="demo_audit_log.csv",
             score_threshold=0.50,
-            spacy_model=blank_path,
+            spacy_model="zh_core_web_sm",
         )
     except Exception as e:
         print(f"\n[錯誤] Pipeline 初始化失敗：{e}")
@@ -588,15 +614,12 @@ def demo():
             for original, token in value_map.items():
                 print(f"  {entity_type}: {original} → {token}")
     else:
-        print("  （無假名映射，blank 模型不會觸發 PERSON NER）")
- 
+        print("  （無假名映射）")
+
     print(f"\n  Audit log → demo_audit_log.csv")
     print("=" * 70)
- 
-    # ── 清理暫存 ──────────────────────────────────────────
-    import shutil
-    shutil.rmtree(tmpdir, ignore_errors=True)
- 
- 
+
+
+
 if __name__ == "__main__":
     demo()

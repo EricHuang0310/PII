@@ -202,7 +202,7 @@ class VerificationAnswerRecognizer(EntityRecognizer):
     def __init__(self):
         super().__init__(supported_entities=["VERIFICATION_ANSWER"], supported_language="zh")
         self._trigger = re.compile("|".join(re.escape(kw) for kw in VERIFICATION_CONTEXT))
-        self._answer  = re.compile(r"[\u4e00-\u9fff]{2,5}|\d{6,8}")
+        self._answer  = re.compile(r"\d{6,8}")
     def load(self): pass
     def analyze(self, text, entities, nlp_artifacts=None):
         results = []
