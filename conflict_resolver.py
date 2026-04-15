@@ -21,9 +21,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from presidio_analyzer import RecognizerResult
+if TYPE_CHECKING:
+    # RecognizerResult 只用於 type annotation；runtime 不需要 Presidio。
+    # 本模組僅存取 .start / .end / .entity_type / .score / .analysis_explanation，
+    # 任何 duck-compatible 物件都可（見 minimal_pipeline.Span）。
+    from presidio_analyzer import RecognizerResult
 
 from config import ENTITY_PRIORITY, ENTITY_RISK_LEVEL
 

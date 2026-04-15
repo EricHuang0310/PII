@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>台灣銀行 STT 脫敏管線 — 架構與衝突解決</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+  <style>
+    :root {
+      --heading: #ffcc66;
+      --accent: #7cc7ff;
+      --warn: #ff9e7a;
+      --ok: #8cffb3;
+    }
+    body { font-family: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+    .reveal h1, .reveal h2, .reveal h3 { color: var(--heading); font-family: inherit; }
+    .reveal section { text-align: left; }
+    .reveal table { font-size: 0.6em; }
+    .reveal table th { color: var(--accent); }
+    .reveal pre { font-size: 0.55em; }
+    .reveal code { color: var(--accent); }
+    .accent { color: var(--accent); }
+    .warn { color: var(--warn); }
+    .ok { color: var(--ok); }
+    .small { font-size: 0.7em; }
+    .xsmall { font-size: 0.55em; color: #aaa; }
+    .center { text-align: center; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      background: #333; color: var(--accent); font-size: 0.8em; margin-right: 4px;
+    }
+    .flow-step {
+      background: #1a1a1a; border-left: 4px solid var(--accent);
+      padding: 8px 12px; margin: 6px 0; font-size: 0.75em;
+    }
+    .flow-step .step-num { color: var(--heading); font-weight: bold; }
+  </style>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+<section class="center">
+  <h1>台灣銀行 STT 脫敏管線</h1>
+  <h3>v3 / v4 架構、實體邏輯、衝突解決</h3>
+  <p class="small">
+    Microsoft Presidio · CKIP Transformers · 客製 Recognizer
+  </p>
+  <p class="xsmall">規範來源：<code>003_脫敏規則表_v3.docx</code></p>
+</section>
+
+<section>
+  <h2>7 步驟總覽</h2>
+  <div class="flow-step"><span class="step-num">Step 0</span> 正規化（NFC、全形半形、中文數字、民國年、STT 語助詞）</div>
+  <div class="flow-step"><span class="step-num">Step 1+2</span> Presidio 分析：regex + spaCy NER + CKIP NER（三路並行）</div>
+  <div class="flow-step"><span class="step-num">Step 3</span> 銀行規則:條件式金額、speaker-aware boost</div>
+  <div class="flow-step"><span class="step-num">Step 4</span> LLM 補充偵測（可選）</div>
+  <div class="flow-step"><span class="step-num">Step 4.5 ★</span> <span class="warn">ConflictResolver</span>（5 層決勝）</div>
+  <div class="flow-step"><span class="step-num">Step 5</span> 假名一致性（PseudonymTracker）</div>
+  <div class="flow-step"><span class="step-num">Step 6</span> Audit log + 可用度標記</div>
+  <p class="xsmall">入口：<code>MaskingPipeline.mask()</code> / <code>mask_dialogue()</code></p>
+</section>
+
+<section>
+  <h2>Step 0 — 正規化</h2>
+  <p class="small"><code>normalizer.normalize()</code> 依序執行：</p>
+  <ol class="small">
+    <li>NFC Unicode 正規化</li>
+    <li>全形 → 半形（<code>１２３</code> → <code>123</code>）</li>
+    <li><span class="warn">中文數字 → 阿拉伯數字</span>（必須在民國年之前）
+      <ul>
+        <li>位值：<code>七十四</code> → <code>74</code></li>
+        <li>單位:<code>三月</code> → <code>3月</code>、<code>五號</code> → <code>5號</code></li>
+        <li>連續：<code>一一三</code> → <code>113</code>、<code>三三三五</code> → <code>3335</code></li>
+      </ul>
+    </li>
+    <li>民國年 → 西元年（範圍 10–150）</li>
+    <li>STT 語助詞壓縮：<code>嗯嗯嗯嗯</code> → <code>嗯嗯</code>（只壓縮 filler chars）</li>
+    <li>空白正規化</li>
+  </ol>
+  <p class="xsmall warn">關鍵不變式：中文數字必須先於民國年轉換，否則「民國一一三年」無法識別</p>
+</section>
+
+<section>
+  <h2>Step 1+2 — Presidio 分析</h2>
+  <p class="small">三路並行偵測，結果合併為 <code>raw_results</code>：</p>
+  <table>
+    <tr><th>偵測路徑</th><th>負責實體</th><th>強項</th></tr>
+    <tr><td>20+ Custom Regex</td><td>電話、卡號、OTP、地址…</td><td>高精度格式化資料</td></tr>
+    <tr><td>spaCy NER（zh_core_web_sm）</td><td>PERSON、LOCATION（備援）</td><td>通用中文 NER</td></tr>
+    <tr><td>CKIP Transformers NER</td><td>PERSON、LOCATION（主力）</td><td>中文人名/地名準確</td></tr>
+  </table>
+  <p class="xsmall">v4 起 CKIP 為<span class="warn">必要組件</span>，未安裝則 <code>mask()</code> 拋 <code>ImportError</code></p>
+</section>
+
+<section>
+  <h2>支援的實體類型（20+）</h2>
+  <table>
+    <tr><th>類別</th><th>實體</th></tr>
+    <tr><td class="accent">個人識別</td><td>PERSON、TW_ID_NUMBER、PASSPORT、DOB、TW_PHONE、EMAIL_ADDRESS、LOCATION</td></tr>
+    <tr><td class="accent">金融帳戶</td><td>TW_CREDIT_CARD、TW_BANK_ACCOUNT</td></tr>
+    <tr><td class="accent">交易序號</td><td>ATM_REF、TXN_REF、LOAN_REF、POLICY_NO</td></tr>
+    <tr><td class="accent">金額</td><td>AMOUNT（條件式）、AMOUNT_TXN（動詞觸發）</td></tr>
+    <tr><td class="accent">認證</td><td>OTP、CVV、EXPIRY、PIN、VERIFICATION_ANSWER</td></tr>
+    <tr><td class="accent">行內</td><td>STAFF_ID、CAMPAIGN、BRANCH</td></tr>
+  </table>
+  <p class="xsmall">每類在 <code>config.TOKEN_MAP</code> 對應固定 token（例：PERSON → <code>[NAME]</code>）</p>
+</section>
+
+<section>
+  <h2>核心遮罩邏輯（1）：電話、身分證、卡號</h2>
+  <table class="small">
+    <tr><th>實體</th><th>Regex 摘要</th><th>特點</th></tr>
+    <tr>
+      <td>TW_PHONE</td>
+      <td>MOBILE <code>09\d{8}</code> / LANDLINE <code>0[2-8]\d{7,8}</code></td>
+      <td>子類型寫入 audit</td>
+    </tr>
+    <tr>
+      <td>TW_ID_NUMBER</td>
+      <td><code>[A-Z][12]\d{8}</code></td>
+      <td>首字母英文 + 性別碼</td>
+    </tr>
+    <tr>
+      <td>TW_CREDIT_CARD</td>
+      <td>13-19 位數字（容忍 - 空格）</td>
+      <td>最高 risk_level</td>
+    </tr>
+    <tr>
+      <td>TW_BANK_ACCOUNT</td>
+      <td>12-16 位連續數字</td>
+      <td>可與卡號競爭</td>
+    </tr>
+    <tr>
+      <td>PASSPORT</td>
+      <td>中華民國 9 位數字</td>
+      <td>context: 「護照」</td>
+    </tr>
+  </table>
+</section>
+
+<section>
+  <h2>核心遮罩邏輯（2）：條件式金額</h2>
+  <div class="two-col">
+    <div class="small">
+      <h3 class="accent">AMOUNT</h3>
+      <p>只在鄰近帳號/卡號時才遮罩（<code>AMOUNT_PROXIMITY_CHARS=60</code>）</p>
+      <pre><code class="language-text">我月薪50000元
+→ 不遮（無帳號）
+
+我要轉帳50000元到12345678
+→ 遮 [AMOUNT]（鄰近帳號）</code></pre>
+    </div>
+    <div class="small">
+      <h3 class="warn">AMOUNT_TXN</h3>
+      <p>高風險動詞觸發（<code>HIGH_RISK_TXN_VERBS</code>）：轉帳、匯款、扣款…</p>
+      <pre><code class="language-text">轉帳50000元
+→ 直接遮 [AMOUNT_TXN]</code></pre>
+    </div>
+  </div>
+  <p class="xsmall">由 <code>pipeline._apply_conditional_amount_masking</code> 實作</p>
+</section>
+
+<section>
+  <h2>核心遮罩邏輯（3）：認證類（OTP / CVV / PIN）</h2>
+  <table class="small">
+    <tr><th>實體</th><th>Pattern</th><th>關鍵字</th></tr>
+    <tr><td>OTP</td><td>4-8 位數字</td><td>驗證碼、OTP、一次性密碼</td></tr>
+    <tr><td>CVV</td><td>3-4 位數字</td><td>安全碼、背面末三碼</td></tr>
+    <tr><td>PIN</td><td>4-8 位數字</td><td>密碼、PIN</td></tr>
+    <tr><td>EXPIRY</td><td><code>MM/YY</code> 或 <code>YYYY-MM</code></td><td>到期日</td></tr>
+    <tr><td>VERIFICATION_ANSWER</td><td><span class="warn">只接 6-8 位數字</span></td><td>母親、驗證問題</td></tr>
+  </table>
+  <p class="xsmall warn">v4 改動：VERIFICATION_ANSWER 移除中文分支，避免「的姓名是陳」誤報；人名交由 CKIP 處理</p>
+</section>
+
+<section>
+  <h2>Speaker-aware / Diarization 降級</h2>
+  <p class="small">
+    <code>_apply_speaker_aware_masking</code> 在<span class="warn">無 diarization</span> 時啟動：
+  </p>
+  <ol class="small">
+    <li>問句 pattern 命中 → 之後 30 字內的 result score <span class="accent">+0.15</span></li>
+    <li>答題 pattern 命中 → span 內的 result score <span class="accent">+0.10</span></li>
+  </ol>
+  <p class="small">
+    <span class="ok">v4 冪等性修正（issue #2）</span>：boost 收集後只套一次，<span class="ok">不再</span> mutate
+    <code>RecognizerResult.score</code>，避免重跑累加。
+  </p>
+  <pre><code class="language-python">q_boost[id(r)] = max(q_boost.get(id(r), 0.0), 0.15)
+a_boost[id(r)] = max(a_boost.get(id(r), 0.0), 0.10)
+new_r = copy.copy(r); new_r.score = min(1.0, r.score + total)</code></pre>
+</section>
+
+<section class="center">
+  <h2>衝突為什麼會發生？</h2>
+  <div class="two-col small" style="text-align:left;">
+    <div>
+      <h3 class="accent">數字類撞類</h3>
+      <p>OTP / PIN / CVV / 卡號 / 帳號 / 金額 都是數字串，regex 會互相命中。</p>
+    </div>
+    <div>
+      <h3 class="accent">多模型重疊</h3>
+      <p>CKIP × spaCy NER × AddressRecognizer 可能在<span class="warn">完全相同</span>的 <code>(start, end)</code> 都抓 PERSON。</p>
+    </div>
+  </div>
+  <div class="small" style="text-align:left; margin-top: 20px;">
+    <h3 class="accent">巢狀包含</h3>
+    <p>AddressRecognizer 抓 <code>「台北市忠孝東路100號」</code>，CKIP 只抓 <code>「台北市」</code> — 短 span 被長 span 包住。</p>
+  </div>
+</section>
+
+<section>
+  <h2>ConflictResolver — 5 層決勝</h2>
+  <ol class="small">
+    <li><span class="accent">Step 0: Exact Duplicate Dedup</span> — 相同 <code>(start, end, entity_type)</code> 保留 score 最高者；同分保留先出現者</li>
+    <li><span class="accent">Contains</span> — 嚴格包含時長者勝</li>
+    <li><span class="accent">Risk Level</span> — 部分重疊時 <code>ENTITY_RISK_LEVEL</code> 高者勝</li>
+    <li><span class="accent">Span Length</span> — 同風險時長者勝</li>
+    <li><span class="accent">Priority Score</span> — 最終 tiebreaker（公式見下頁）</li>
+  </ol>
+  <p class="small ok">關鍵不變式：<code>kept</code> 中任兩個 span 皆不重疊（已有 regression test 壓力測試 30 個隨機 span）</p>
+</section>
+
+<section>
+  <h2>Priority Score 公式（v4 修正）</h2>
+  <p class="small warn">舊公式 priority 主導，與 Step 2a risk-level 決勝衝突。</p>
+  <pre><code class="language-python">priority_score = risk * 20.0       # 1..5 → 20..100 主導
+               + priority * 0.1    # 25..100 → 2.5..10 次要
+               + score * 5.0       # 0..1 → 0..5 第三
+               + (2.0 if kw else 0.0)</code></pre>
+  <p class="small">保證：<span class="ok">高 risk 無 keyword &gt; 低 risk + keyword</span>（20 &gt; 2）。</p>
+  <p class="xsmall">舊問題實例：OTP(risk=5, pri=75) 被 PERSON(risk=4, pri=95) 蓋過 → 已修</p>
+</section>
+
+<section>
+  <h2>conflict_log 輸出格式（v4）</h2>
+  <p class="small">每筆 entry：<code>(winner_result, loser_result, reason_str)</code></p>
+  <table class="small">
+    <tr><th>reason 格式</th><th>意義</th></tr>
+    <tr><td><code>EXACT_DUP:higher_score_wins</code></td><td>Step 0 分數決勝</td></tr>
+    <tr><td><code>EXACT_DUP:first_wins</code></td><td>Step 0 同分保留先出現</td></tr>
+    <tr><td><code>[R1] CONTAINS:longer_wins</code></td><td>嚴格包含</td></tr>
+    <tr><td><code>[R2] CROSS_TYPE_SAME_SPAN:RISK_LEVEL:5&gt;4</code></td><td>同 span 跨 type 警示 + 原因</td></tr>
+    <tr><td><code>[R3] SPAN_LENGTH:12&gt;8</code></td><td>span 長度決勝</td></tr>
+    <tr><td><code>[R4] PRIORITY_SCORE:112.5&gt;=98.4</code></td><td>最終 priority tiebreak</td></tr>
+  </table>
+  <p class="xsmall">
+    <span class="accent">[R{n}]</span> = Step C 輪次索引（issue #7）<br>
+    <span class="accent">CROSS_TYPE_SAME_SPAN</span> = 不同 type 但 span 完全相同（issue #5）
+  </p>
+</section>
+
+<section>
+  <h2>實例：三路爭「台北市忠孝東路100號」</h2>
+  <table class="small">
+    <tr><th>#</th><th>Source</th><th>Type</th><th>Span</th><th>Score</th></tr>
+    <tr><td>A</td><td>CKIP</td><td>LOCATION</td><td>台北市 (4-7)</td><td>0.85</td></tr>
+    <tr><td>B</td><td>spaCy</td><td>LOCATION</td><td>台北市 (4-7)</td><td>0.70</td></tr>
+    <tr><td>C</td><td>AddressEnhanced</td><td>LOCATION</td><td>台北市忠孝東路100號 (4-16)</td><td>0.80</td></tr>
+  </table>
+  <div class="small">
+    <p><span class="accent">Step 0</span>：A vs B 為 exact dup → A 勝（0.85 &gt; 0.70），寫 <code>EXACT_DUP:higher_score_wins</code></p>
+    <p><span class="accent">Step C [R1]</span>：C 嚴格包含 A → C 勝，寫 <code>[R1] CONTAINS:longer_wins</code></p>
+    <p class="ok">最終保留：C → <code>[ADDRESS]</code></p>
+  </div>
+</section>
+
+<section>
+  <h2>Step 5 — 假名一致性（v4 固定 token）</h2>
+  <p class="small"><code>PseudonymTracker.resolve()</code> 一律回傳 <code>TOKEN_MAP[entity_type]</code>：</p>
+  <pre><code class="language-python">我叫王小明，我的卡號是1234567890123456
+                ↓
+我叫[NAME],我的卡號是[CARD]</code></pre>
+  <table class="small">
+    <tr><th>v3 舊行為</th><th>v4 新行為</th></tr>
+    <tr><td>第 1 個 → [NAME]_1、第 2 個 → [NAME]_2</td><td>全部 → [NAME]</td></tr>
+  </table>
+  <p class="small">
+    <code>pseudonym_map</code> 仍記錄原值 → token 對應（供 audit 追溯）。<br>
+    字串替換按 <span class="warn">start 倒序</span>進行，避免位移錯亂。
+  </p>
+</section>
+
+<section>
+  <h2>Step 6 — 可用度標記 + Audit Log</h2>
+  <p class="small"><code>usability_tag</code> 判定優先序：</p>
+  <ol class="small">
+    <li><code>LOW_AUDIO_QUALITY</code> — ASR 信心 &lt; 0.70</li>
+    <li><code>FALLBACK_MODE</code> — 無 diarization 但有問句降級介入</li>
+    <li><code>NO_DIARIZATION</code> — 無 diarization 也無問句</li>
+    <li><code>DEGRADED_MASKING</code> — 遮蔽密度 &gt; 3/100 字</li>
+    <li><code>USABLE</code> — 正常</li>
+  </ol>
+  <p class="small">Audit CSV 欄位（<code>config.AUDIT_FIELDNAMES</code>）：</p>
+  <pre><code class="language-text">session_id, step, rule_triggered, entity_type, entity_subtype,
+original_type_desc, start, end, score, token_applied,
+conflict_resolved, diarization_available, usability_tag, timestamp</code></pre>
+</section>
+
+<section>
+  <h2>對話批次 <code>mask_dialogue</code></h2>
+  <p class="small">處理 <code>List[DialogueTurn]</code>，跨 turn 共用同一 <code>PseudonymTracker</code>。</p>
+  <p class="small"><span class="warn">Diarization 判定</span>（issue #3 修正）：</p>
+  <pre><code class="language-python">labeled_ratio = labeled_turns / total_turns
+diarization_available = labeled_ratio >= 0.8</code></pre>
+  <p class="small">
+    <span class="warn">非</span> <code>any(t.speaker for t in turns)</code>，避免一通電話只有 1 句有 speaker 就誤判成整通都有 diarization。
+  </p>
+</section>
+
+<section>
+  <h2>回歸測試護網（55 tests）</h2>
+  <table class="small">
+    <tr><th>檔案</th><th>Cases</th><th>重點</th></tr>
+    <tr><td>test_conflict_resolver.py</td><td>11</td><td>Step 0、Contains、不變式、連鎖、CROSS_TYPE、round index</td></tr>
+    <tr><td>test_priority_formula.py</td><td>4</td><td>risk 主導、keyword 微調、monotonic</td></tr>
+    <tr><td>test_speaker_aware.py</td><td>5</td><td>冪等、不 mutation、多 window 只加一次</td></tr>
+    <tr><td>test_has_keyword_context.py</td><td>7</td><td>context_improvement、supportive_word、簽名</td></tr>
+    <tr><td>test_normalizer.py</td><td>28</td><td>全形、中文數字、民國年、STT、綜合</td></tr>
+  </table>
+  <p class="small ok">執行：<code>pytest</code> → 55 passed</p>
+</section>
+
+<section class="center">
+  <h1>關鍵不變式</h1>
+  <ul class="small" style="display:inline-block; text-align:left;">
+    <li>中文數字必須先於民國年轉換</li>
+    <li><code>kept</code> 中任兩 span 不重疊</li>
+    <li>同 turn 重跑 score 不累加</li>
+    <li>v4 token 固定，不帶 <code>_1</code>/<code>_2</code> 編號</li>
+    <li>CKIP 為必要組件</li>
+    <li>per-span OperatorConfig 替換（勿改回 entity_type-keyed dict）</li>
+  </ul>
+  <p class="xsmall" style="margin-top:30px;">詳見 <code>CLAUDE.md</code> 與 <code>pipeline.py</code> 頭部 bug-fix 紀錄</p>
+</section>
+
+<section class="center">
+  <h1>謝謝</h1>
+  <p class="small">
+    Repo：<code>github.com/EricHuang0310/PII</code>
+  </p>
+  <p class="xsmall">
+    投影片使用 reveal.js 5.1.0<br>
+    ←/→ 翻頁 · F 全螢幕 · ESC 總覽 · S 演講者備忘
+  </p>
+</section>
+
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    slideNumber: 'c/t',
+    plugins: [RevealHighlight],
+    transition: 'slide',
+  });
+</script>
+</body>
+</html>

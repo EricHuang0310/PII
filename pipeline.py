@@ -544,7 +544,7 @@ def demo():
         DialogueTurn(speaker="AGENT",    text="電話號碼幾號呢？"),
         DialogueTurn(speaker="CUSTOMER", text="零九一二三四五六七八"),
         DialogueTurn(speaker="AGENT",    text="信用卡卡號是多少？"),
-        DialogueTurn(speaker="CUSTOMER", text="卡號1234567890123456"),
+        DialogueTurn(speaker="CUSTOMER", text="卡號1234567890123456且我到期日是03/26"),
         DialogueTurn(speaker="AGENT",    text="請問驗證碼？"),
         DialogueTurn(speaker="CUSTOMER", text="驗證碼是654321"),
         DialogueTurn(speaker="AGENT",    text="需要轉帳多少？"),
@@ -563,7 +563,7 @@ def demo():
     # ── 初始化 ────────────────────────────────────────────
     try:
         pipeline = MaskingPipeline(
-            log_path="demo_audit_log.csv",
+            log_path=None,
             score_threshold=0.50,
             spacy_model="zh_core_web_sm",
         )
@@ -615,8 +615,6 @@ def demo():
                 print(f"  {entity_type}: {original} → {token}")
     else:
         print("  （無假名映射）")
-
-    print(f"\n  Audit log → demo_audit_log.csv")
     print("=" * 70)
 
 

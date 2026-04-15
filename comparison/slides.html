@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Presidio+spaCy vs CKIP — 遮罩效果比較</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+  <style>
+    :root {
+      --heading: #ffcc66;
+      --accent-a: #7cc7ff;
+      --accent-b: #8cffb3;
+      --warn: #ff9e7a;
+      --muted: #aaa;
+    }
+
+    body {
+      font-family: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+    }
+
+    .reveal h1,
+    .reveal h2,
+    .reveal h3 {
+      color: var(--heading);
+      font-family: inherit;
+    }
+
+    .reveal section {
+      text-align: left;
+    }
+
+    .reveal table {
+      font-size: 0.6em;
+    }
+
+    .reveal table th {
+      color: var(--heading);
+    }
+
+    .reveal pre {
+      font-size: 0.55em;
+    }
+
+    .reveal code {
+      color: var(--accent-a);
+    }
+
+    .a {
+      color: var(--accent-a);
+    }
+
+    .b {
+      color: var(--accent-b);
+    }
+
+    .warn {
+      color: var(--warn);
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .small {
+      font-size: 0.7em;
+    }
+
+    .xsmall {
+      font-size: 0.55em;
+      color: var(--muted);
+    }
+
+    .center {
+      text-align: center;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .metric-big {
+      font-size: 2.2em;
+      font-weight: bold;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 0.7em;
+      margin-right: 6px;
+    }
+
+    .pill-a {
+      background: #1e3a5f;
+      color: var(--accent-a);
+    }
+
+    .pill-b {
+      background: #1e4f33;
+      color: var(--accent-b);
+    }
+
+    .flow {
+      background: #1a1a1a;
+      border-left: 4px solid var(--accent-a);
+      padding: 8px 12px;
+      margin: 6px 0;
+      font-size: 0.75em;
+    }
+
+    .flow.b {
+      border-left-color: var(--accent-b);
+    }
+
+    .win-a {
+      background: rgba(124, 199, 255, 0.15);
+    }
+
+    .win-b {
+      background: rgba(140, 255, 179, 0.15);
+    }
+
+    .same {
+      background: rgba(255, 255, 255, 0.03);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <section class="center">
+        <h1>Presidio+spaCy vs CKIP</h1>
+        <h3>固定 20 regex，只換 NER 來源</h3>
+        <p class="small" style="margin-top: 40px;">
+          <span class="pill pill-a">A</span> Presidio + spaCy zh_core_web_sm + 20 custom regex
+        </p>
+        <p class="small">
+          <span class="pill pill-b">B</span> CKIP Transformers + 21 pure regex（無 presidio/spacy）
+        </p>
+        <p class="xsmall" style="margin-top: 40px;">Driver: <code>comparison/compare.py</code> · 2026-04-15</p>
+      </section>
+
+      <section>
+        <h2>比較軸：為什麼這樣比？</h2>
+        <p class="small">
+          先前的比較混雜了 <span class="warn">regex 覆蓋率 + NER 模型</span> 兩個變因。
+          本次將 regex 覆蓋<strong>固定為 20 個（B 側加 1 個 email 補齊）</strong>，
+          只換 NER 來源以隔離變因。
+        </p>
+        <table class="small">
+          <tr>
+            <th></th>
+            <th>A</th>
+            <th>B</th>
+          </tr>
+          <tr>
+            <td>Regex recognizer</td>
+            <td>20（同）</td>
+            <td>21 pure regex（含 email）</td>
+          </tr>
+          <tr>
+            <td>NER</td>
+            <td class="a">spaCy zh_core_web_sm</td>
+            <td class="b">CKIP bert-base-chinese-ner</td>
+          </tr>
+          <tr>
+            <td>Orchestrator</td>
+            <td>Presidio AnalyzerEngine</td>
+            <td>手寫 for-loop</td>
+          </tr>
+          <tr>
+            <td>ConflictResolver</td>
+            <td colspan="2" class="center muted">共用（不依賴 presidio）</td>
+          </tr>
+        </table>
+      </section>
+
+      <section>
+        <h2>兩側架構</h2>
+        <div class="two-col">
+          <div>
+            <h3 class="a">A 側</h3>
+            <div class="flow">text</div>
+            <div class="flow">Presidio AnalyzerEngine</div>
+            <div class="flow">├─ spaCy NER (zh_core_web_sm)</div>
+            <div class="flow">└─ 20 custom PatternRecognizer</div>
+            <div class="flow">ConflictResolver (v4)</div>
+            <div class="flow">per-span replace</div>
+          </div>
+          <div>
+            <h3 class="b">B 側</h3>
+            <div class="flow b">text</div>
+            <div class="flow b">for rec in [...]: rec.analyze(text)</div>
+            <div class="flow b">├─ 21 pure regex recognizer</div>
+            <div class="flow b">└─ CKIPNer (bert-base)</div>
+            <div class="flow b">ConflictResolver (v4)</div>
+            <div class="flow b">per-span replace</div>
+          </div>
+        </div>
+        <p class="xsmall">兩側共用 <code>conflict_resolver.py</code>（duck-typed Span）；B 側 runtime 完全不 import presidio/spacy
+        </p>
+      </section>
+
+      <section>
+        <h2>10 個測試案例</h2>
+        <ol class="small">
+          <li>我叫王小明，卡號是1234567890123456</li>
+          <li>我電話0912345678</li>
+          <li>住在台北市忠孝東路100號</li>
+          <li>驗證碼是654321</li>
+          <li>轉帳到帳號123456789012</li>
+          <li>我家住在好市多隔壁的SEVEN樓上</li>
+          <li>生日是民國七十四年五月一日</li>
+          <li>我的身分證A123456789</li>
+          <li>母親的姓名是陳美玲</li>
+          <li>我的Email是foo@example.com</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>逐句結果（10 / 10）</h2>
+        <table style="font-size: 0.5em;">
+          <tr>
+            <th>#</th>
+            <th>原文</th>
+            <th class="a">A</th>
+            <th class="b">B</th>
+            <th>狀態</th>
+          </tr>
+          <tr class="same">
+            <td>1</td>
+            <td>王小明 + 卡號</td>
+            <td>[NAME]…[CARD]</td>
+            <td>[NAME]…[CARD]</td>
+            <td>一致</td>
+          </tr>
+          <tr class="same">
+            <td>2</td>
+            <td>電話</td>
+            <td>[PHONE]</td>
+            <td>[PHONE]</td>
+            <td>一致</td>
+          </tr>
+          <tr class="same">
+            <td>3</td>
+            <td>台北市地址</td>
+            <td>[ADDRESS]</td>
+            <td>[ADDRESS]</td>
+            <td>一致</td>
+          </tr>
+          <tr class="same">
+            <td>4</td>
+            <td>驗證碼654321</td>
+            <td>[OTP]</td>
+            <td>[OTP]</td>
+            <td>一致</td>
+          </tr>
+          <tr class="same">
+            <td>5</td>
+            <td>帳號</td>
+            <td>[ACCOUNT]</td>
+            <td>[ACCOUNT]</td>
+            <td>一致</td>
+          </tr>
+          <tr class="same">
+            <td>6</td>
+            <td>好市多隔壁</td>
+            <td>[ADDRESS]EVEN…</td>
+            <td>[ADDRESS]EVEN…</td>
+            <td>一致（兩側皆吃掉 S）</td>
+          </tr>
+          <tr class="same">
+            <td>7</td>
+            <td>民國74年5月1日</td>
+            <td>無遮</td>
+            <td>無遮</td>
+            <td>一致（皆漏）</td>
+          </tr>
+          <tr class="same">
+            <td>8</td>
+            <td>身分證</td>
+            <td>[ID]</td>
+            <td>[ID]</td>
+            <td>一致</td>
+          </tr>
+          <tr class="win-b">
+            <td>9</td>
+            <td>母親的姓名是<strong>陳美玲</strong></td>
+            <td class="warn">漏抓</td>
+            <td class="b">[NAME]</td>
+            <td class="b">B 勝</td>
+          </tr>
+          <tr class="win-b">
+            <td>10</td>
+            <td>我的Email是foo@…</td>
+            <td class="warn">[EMAIL]（整段吃掉）</td>
+            <td class="b">我的Email是[EMAIL]</td>
+            <td class="b">B 更精準</td>
+          </tr>
+        </table>
+        <p class="xsmall">一致 8/10；NER 差異 1/10（陳美玲）；Email span 差異 1/10</p>
+      </section>
+
+      <section>
+        <h2>差異案例 9：<span class="b">陳美玲</span></h2>
+        <p class="small"><strong>原文</strong>：母親的姓名是陳美玲</p>
+        <div class="two-col">
+          <div class="small">
+            <h3 class="a">A 結果</h3>
+            <pre><code class="language-text">母親的姓名是陳美玲
+(無任何實體偵測)</code></pre>
+            <p>spaCy <code>zh_core_web_sm</code> 對台灣人名命中率低；</p>
+            <p>「陳美玲」未被識別為 PERSON</p>
+          </div>
+          <div class="small">
+            <h3 class="b">B 結果</h3>
+            <pre><code class="language-text">母親的姓名是[NAME]
+→ PERSON('陳美玲')</code></pre>
+            <p>CKIP <code>bert-base-chinese-ner</code> 針對</p>
+            <p>繁中 + 台灣人名訓練，命中準確</p>
+          </div>
+        </div>
+        <p class="small" style="margin-top: 20px;">
+          <span class="warn">這就是原專案 v4 設 CKIP 為必要組件的原因</span>
+        </p>
+      </section>
+
+      <section>
+        <h2>差異案例 10：<span class="a">Email span</span></h2>
+        <p class="small"><strong>原文</strong>：我的Email是foo@example.com</p>
+        <div class="two-col">
+          <div class="small">
+            <h3 class="a">A 結果</h3>
+            <pre><code class="language-text">[EMAIL]
+→ EMAIL_ADDRESS('我的Email是foo@example.com')</code></pre>
+            <p class="warn">整段被當成 EMAIL_ADDRESS</p>
+            <p>Presidio EmailRecognizer 與 context 互動過頭，連「我的Email是」也被吃進 span</p>
+          </div>
+          <div class="small">
+            <h3 class="b">B 結果</h3>
+            <pre><code class="language-text">我的Email是[EMAIL]
+→ EMAIL_ADDRESS('foo@example.com')</code></pre>
+            <p class="b">精準抓到 email 格式</p>
+            <p>純 regex：<br><code>[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}</code></p>
+          </div>
+        </div>
+        <p class="small" style="margin-top: 20px;">
+          <span class="b">B 的結果更正確</span>；A 這裡其實是 Presidio 組合行為的副作用
+        </p>
+      </section>
+
+      <section>
+        <h2>性能</h2>
+        <div class="two-col">
+          <div class="center">
+            <div class="muted small">A 初始化</div>
+            <div class="metric-big a">0.56s</div>
+            <div class="muted small" style="margin-top: 20px;">A 每句推論</div>
+            <div class="metric-big a">7.3ms</div>
+            <div class="muted small" style="margin-top: 20px;">runtime 載入<br>presidio+spacy 模組</div>
+            <div class="metric-big a">265</div>
+          </div>
+          <div class="center">
+            <div class="muted small">B 初始化</div>
+            <div class="metric-big b">3.14s</div>
+            <div class="muted small" style="margin-top: 20px;">B 每句推論</div>
+            <div class="metric-big b">119.4ms</div>
+            <div class="muted small" style="margin-top: 20px;">runtime 載入<br>presidio+spacy 模組</div>
+            <div class="metric-big b">0</div>
+          </div>
+        </div>
+        <p class="small center" style="margin-top: 30px;">
+          <span class="warn">B 推論慢 16.4×, 若使用 GPU 進行推論則可以解決此問題。</span>
+        </p>
+      </section>
+
+
+
+
+      <section>
+        <h2>取捨矩陣</h2>
+        <table>
+          <tr>
+            <th>面向</th>
+            <th class="a">A</th>
+            <th class="b">B</th>
+          </tr>
+          <tr>
+            <td>中文 PERSON / LOCATION NER 品質</td>
+            <td>弱</td>
+            <td class="b">✓ 強（CKIP）</td>
+          </tr>
+          <tr>
+            <td>Email span 精準度</td>
+            <td>吃過頭</td>
+            <td class="b">✓ 精準</td>
+          </tr>
+          <tr>
+            <td>推論速度（CPU）</td>
+            <td class="a">✓ 7.3 ms/句</td>
+            <td>119.4 ms/句</td>
+          </tr>
+          <tr>
+            <td>冷啟動</td>
+            <td class="a">✓ 0.56 s</td>
+            <td>3.14 s</td>
+          </tr>
+          <tr>
+            <td>依賴純淨度（runtime 模組數）</td>
+            <td>265</td>
+            <td class="b">✓ 0</td>
+          </tr>
+          <tr>
+            <td>維護成本</td>
+            <td>靠 Presidio 生態</td>
+            <td class="b">✓ 自有、可控</td>
+          </tr>
+          <tr>
+            <td>模型檔案大小</td>
+            <td class="a">~48 MB</td>
+            <td>~400 MB</td>
+          </tr>
+        </table>
+      </section>
+
+
+      <section class="center">
+        <h1>結論</h1>
+        <ul style="display: inline-block; text-align: left;" class="small">
+          <li><span class="b">CKIP 在中文人名 NER 上明顯優於 spaCy</span></li>
+          <li>B 的 Email span 比 A 精準</li>
+          <li>同一個 ConflictResolver 在兩側皆正常運作</li>
+        </ul>
+        <p class="small" style="margin-top: 30px;">
+          <span class="muted">投影片：<code>comparison/slides.html</code>
+            ・驗證腳本：<code>comparison/compare.py</code></span>
+        </p>
+      </section>
+
+
+
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+  <script>
+    Reveal.initialize({
+      hash: true,
+      slideNumber: 'c/t',
+      plugins: [RevealHighlight],
+      transition: 'slide',
+    });
+  </script>
+</body>
+
+</html>
