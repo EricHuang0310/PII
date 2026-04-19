@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8">
+  <title>PII 脫敏管線演進 — A → B → C</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+  <style>
+    :root {
+      --heading: #ffcc66;
+      --accent-a: #7cc7ff;
+      --accent-b: #8cffb3;
+      --accent-c: #c79cff;
+      --warn: #ff9e7a;
+      --muted: #aaa;
+    }
+
+    body {
+      font-family: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+    }
+
+    .reveal h1, .reveal h2, .reveal h3 {
+      color: var(--heading);
+      font-family: inherit;
+    }
+
+    .reveal section {
+      text-align: left;
+    }
+
+    .reveal table {
+      font-size: 0.52em;
+    }
+
+    .reveal table th {
+      color: var(--heading);
+    }
+
+    .reveal pre {
+      font-size: 0.55em;
+    }
+
+    .reveal code {
+      color: var(--accent-c);
+    }
+
+    .a { color: var(--accent-a); }
+    .b { color: var(--accent-b); }
+    .c { color: var(--accent-c); }
+    .warn { color: var(--warn); }
+    .muted { color: var(--muted); }
+
+    .small { font-size: 0.7em; }
+    .xsmall { font-size: 0.55em; color: var(--muted); }
+    .center { text-align: center; }
+
+    .three-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 16px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .metric-big {
+      font-size: 2.0em;
+      font-weight: bold;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 0.7em;
+      margin-right: 6px;
+    }
+
+    .pill-a { background: #1e3a5f; color: var(--accent-a); }
+    .pill-b { background: #1e4f33; color: var(--accent-b); }
+    .pill-c { background: #3a2950; color: var(--accent-c); }
+
+    .card {
+      background: #1a1a1a;
+      padding: 14px;
+      border-radius: 8px;
+      font-size: 0.75em;
+    }
+    .card.a { border-top: 4px solid var(--accent-a); }
+    .card.b { border-top: 4px solid var(--accent-b); }
+    .card.c { border-top: 4px solid var(--accent-c); }
+
+    .win-c  { background: rgba(199, 156, 255, 0.18); }
+    .lose   { background: rgba(255, 158, 122, 0.14); }
+    .same   { background: rgba(255, 255, 255, 0.03); }
+  </style>
+</head>
+
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <section class="center">
+        <h1>PII 脫敏管線演進</h1>
+        <h3 style="margin-top: 30px;">A 原版 → B 新版 → C 合併版</h3>
+        <p class="small" style="margin-top: 40px;">
+          為什麼改？改了什麼？目前站在哪？
+        </p>
+        <p class="xsmall" style="margin-top: 60px;">
+          2026-04-18 · Driver <code>comparison/compare_abc.py</code>
+        </p>
+      </section>
+
+      <section>
+        <h2>TL;DR</h2>
+        <ul class="small">
+          <li><span class="a">A 原版</span>：治理功能完整，但中文 NER 不準、Presidio 依賴重</li>
+          <li><span class="b">B 新版</span>：NER 正確率提升，但把 A 的治理能力丟掉了</li>
+          <li><span class="c">C 合併版</span>：以 B 為骨幹、把 A 的 normalize / pseudonym / bank rules 合併回來，並修掉 PIN regression</li>
+          <li class="c"><strong>結論</strong>：C 在 10 個代表案例中全部等於或優於 A 與 B</li>
+        </ul>
+        <div class="three-col" style="margin-top: 20px;">
+          <div class="card a center">
+            <div class="muted xsmall">A 原版</div>
+            <div class="metric-big a">v3</div>
+            <div class="xsmall">Presidio + spaCy + 17 regex + normalizer + pseudonym + bank rules</div>
+          </div>
+          <div class="card b center">
+            <div class="muted xsmall">B 新版</div>
+            <div class="metric-big b">v4-lean</div>
+            <div class="xsmall">CKIP + 20 pure regex<br>（拔掉 Presidio runtime）</div>
+          </div>
+          <div class="card c center">
+            <div class="muted xsmall">C 合併版</div>
+            <div class="metric-big c">v4-full</div>
+            <div class="xsmall">B 骨幹 + normalize + PseudonymTracker + bank rules</div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>為什麼要從 A 改成 B？</h2>
+        <p class="small">A 的六個痛點驅動了拔除 Presidio 的決定：</p>
+        <table>
+          <tr><th>問題</th><th>A 原版的現象</th></tr>
+          <tr>
+            <td class="warn">中文 PERSON NER 不準</td>
+            <td>spaCy <code>zh_core_web_sm</code> 漏掉「陳美玲」這類台灣常見姓名；反而被 <code>VERIFICATION_ANSWER</code> regex <code>[\u4e00-\u9fff]{2,5}</code> 亂切</td>
+          </tr>
+          <tr>
+            <td class="warn">語言過濾陷阱</td>
+            <td>Custom recognizer 預設 <code>supported_language="en"</code>，以 <code>language="zh"</code> 分析時全部被 Presidio 過濾；電話/OTP/ID/卡號全部漏遮，除非手動補 <code>="zh"</code></td>
+          </tr>
+          <tr>
+            <td class="warn">runtime 過重</td>
+            <td>Presidio + spaCy 啟動時載入 ~70 個 Python 模組，容器啟動 / 冷啟動時間長；升級 Presidio 會帶來語言/flag 等 API 不相容問題</td>
+          </tr>
+          <tr>
+            <td class="warn">Email 邊界溢出</td>
+            <td>Presidio 內建 <code>EmailRecognizer</code> 會把「我的Email是foo@example.com」整段抓成 EMAIL_ADDRESS</td>
+          </tr>
+          <tr>
+            <td class="warn">電話/帳號誤判</td>
+            <td>原版 <code>TW_BANK_ACCOUNT</code> regex <code>\d{10,14}</code> 沒排除 09 開頭，09xxxxxxxx 10 位手機會被當成銀行帳號</td>
+          </tr>
+          <tr>
+            <td class="warn">OTP context 不完整</td>
+            <td>原版 <code>OTP_CONTEXT</code> 缺「驗證碼」關鍵字，<code>驗證碼是654321</code> 這類關鍵 case 漏遮</td>
+          </tr>
+        </table>
+      </section>
+
+      <section>
+        <h2>B 做了什麼</h2>
+        <ul class="small">
+          <li>把中文 NER 來源從 spaCy 換成 <span class="b">CKIP bert-base-chinese-ner</span>（繁中 + 台灣人名訓練）</li>
+          <li>用 20 個 <span class="b">pure regex recognizer</span> 取代 Presidio 的 PatternRecognizer — 同樣的 pattern / context boost 行為，但不依賴 Presidio</li>
+          <li>ConflictResolver 透過 <span class="b">duck-typed Span</span> 繼續沿用</li>
+          <li>Email 自寫精準 regex，繞開 Presidio EmailRecognizer 的邊界問題</li>
+          <li>TW_BANK_ACCOUNT 補 negative lookahead <code>(?!09\d{8})</code>，解決電話誤判</li>
+          <li>OTP context 擴充，涵蓋「驗證碼」</li>
+        </ul>
+        <p class="small warn" style="margin-top: 16px;">
+          <strong>代價</strong>：B 為了簡化把 A 的 normalize / PseudonymTracker / bank rules 全部丟掉，治理能力暫時缺席。
+        </p>
+      </section>
+
+      <section>
+        <h2>B 捨棄的治理功能</h2>
+        <table>
+          <tr><th>功能</th><th>A 有</th><th>B 沒有</th><th>影響</th></tr>
+          <tr>
+            <td>Normalizer</td>
+            <td class="a">✓ 全形/民國年/中文數字/STT 填充字</td>
+            <td class="warn">✗</td>
+            <td>「民國七十四年」永遠當原始文字；STT「嗯嗯嗯嗯」噪音被保留</td>
+          </tr>
+          <tr>
+            <td>PseudonymTracker</td>
+            <td class="a">✓ <code>[NAME_1]</code>、<code>[NAME_2]</code>（同值一致、多值編號）</td>
+            <td class="warn">✗ 固定 token <code>[NAME]</code></td>
+            <td>兩個不同人都變 <code>[NAME]</code>；審計/分析無法回推</td>
+          </tr>
+          <tr>
+            <td>條件式 AMOUNT</td>
+            <td class="a">✓ 需要帳號/卡號並存才遮</td>
+            <td class="warn">✗</td>
+            <td>「油價30元」、「氣溫30度」都會被當 AMOUNT 遮</td>
+          </tr>
+          <tr>
+            <td>Speaker-aware boost</td>
+            <td class="a">✓ 無 diarization 時補分</td>
+            <td class="warn">✗</td>
+            <td>降級模式下 confidence 邊緣的實體漏遮</td>
+          </tr>
+          <tr>
+            <td>Audit Log</td>
+            <td class="a">✓ AuditLogger</td>
+            <td class="warn">✗</td>
+            <td>治理稽核需要外包到上層</td>
+          </tr>
+        </table>
+        <p class="small c" style="margin-top: 16px;">
+          ↓ 這就是 C 要把這些能力再搬回來的動機
+        </p>
+      </section>
+
+      <section>
+        <h2>C 的架構：B 骨幹 + A 治理</h2>
+        <div class="three-col">
+          <div class="card a">
+            <h3 class="a">A（v3）</h3>
+            <div class="xsmall">
+              text<br>
+              ↓ normalize<br>
+              ↓ Presidio (spaCy + 17 regex)<br>
+              ↓ bank rules<br>
+              ↓ ConflictResolver<br>
+              ↓ PseudonymTracker<br>
+              ↓ per-span replace<br>
+              ↓ audit log
+            </div>
+          </div>
+          <div class="card b">
+            <h3 class="b">B（v4-lean）</h3>
+            <div class="xsmall">
+              text<br>
+              <span class="muted">（不 normalize）</span><br>
+              ↓ for rec: analyze<br>
+              ├─ 20 pure regex<br>
+              └─ CKIPNer<br>
+              ↓ ConflictResolver<br>
+              ↓ per-span replace<br>
+              <span class="muted">（固定 token）</span>
+            </div>
+          </div>
+          <div class="card c">
+            <h3 class="c">C（v4-full）</h3>
+            <div class="xsmall">
+              text<br>
+              <span class="c">↓ normalize</span><br>
+              ↓ for rec: analyze<br>
+              ├─ 20 pure regex<br>
+              └─ CKIPNer<br>
+              <span class="c">↓ 條件式 AMOUNT</span><br>
+              <span class="c">↓ speaker-aware boost</span><br>
+              ↓ ConflictResolver<br>
+              <span class="c">↓ PseudonymTracker _1/_2</span><br>
+              ↓ per-span replace
+            </div>
+          </div>
+        </div>
+        <p class="xsmall" style="margin-top: 16px;">
+          C 重用 <code>original_file/normalizer.py</code> 與 <code>original_file/pseudonym.py</code>；bank rules 以 <code>Span</code> 介面重寫，runtime 仍 0 個 presidio/spacy 模組
+        </p>
+      </section>
+
+      <section>
+        <h2 class="warn">C 合併過程遇到的一個問題</h2>
+        <p class="small">normalize 把中文數字轉成阿拉伯數字後，暴露了 B 側 PIN regex 的脆弱：</p>
+        <pre><code class="language-text">案 1: 生日是民國七十四年五月一日
+       → normalize → 生日是1985年5月1日
+       → C 誤抓 → 生日是[PIN]年5月1日   ← 1985 被 PIN \d{4,6} 吃掉
+
+案 4: 卡號末四碼是三三三五
+       → normalize → 卡號末四碼是3335
+       → C 誤抓 → 卡號末四碼是[PIN]     ← 3335 被 PIN 吃掉</code></pre>
+        <p class="small warn">
+          根因：PIN pattern <code>\d{4,6}</code> score 0.30、無需 context 就被 resolver 保留 — 只要有 4 位數字就會 fire。
+        </p>
+      </section>
+
+      <section>
+        <h2 class="c">修正：<code>require_context</code> 硬約束</h2>
+        <p class="small">在 <code>PurePatternRecognizer</code> 加一個布林旗標：</p>
+        <pre><code class="language-python">class PurePatternRecognizer(Recognizer):
+    def __init__(self, entity_type, patterns, context_keywords,
+                 require_context: bool = False):
+        ...
+        self.require_context = require_context
+
+    def analyze(self, text):
+        for match in regex.finditer(text):
+            kw = self._find_context_word(...)
+            if self.require_context and kw is None:
+                continue   # 沒有 context 關鍵字 → 直接 drop match
+            ...</code></pre>
+        <p class="small">對三個「低分短數字」類別啟用：</p>
+        <ul class="small">
+          <li><code>PIN</code>（<code>\d{4,6}</code>）</li>
+          <li><code>CVV</code>（<code>\d{3}</code>）</li>
+          <li><code>BRANCH</code>（<code>\d{3,4}</code>）</li>
+        </ul>
+        <p class="small c">
+          <strong>為什麼選這個、不選「拉高 threshold」</strong>：context 本來就是這類 pattern 唯一可靠的觸發條件。即使 threshold 拉到 0.55，只要 context boost +0.35 就會再次越過門檻 — 條件本質上還是 context。直接做成硬約束語意更清楚、效果更確定，也不需另外調 ConflictResolver。
+        </p>
+      </section>
+
+      <section>
+        <h2>修正後驗證</h2>
+        <div class="two-col">
+          <div class="card" style="border-left: 4px solid var(--warn);">
+            <h3 class="warn">修正前 C</h3>
+            <pre><code class="language-text">生日是[PIN]年5月1日
+卡號末四碼是[PIN]</code></pre>
+            <p class="xsmall">normalize 暴露的 regression</p>
+          </div>
+          <div class="card" style="border-left: 4px solid var(--accent-c);">
+            <h3 class="c">修正後 C</h3>
+            <pre><code class="language-text">生日是1985年5月1日
+卡號末四碼是3335</code></pre>
+            <p class="xsmall">PIN 找不到 <code>密碼/PIN/網銀密碼⋯</code> context → 不 fire</p>
+          </div>
+        </div>
+        <p class="small" style="margin-top: 20px;">
+          驗證：<code>comparison/compare_bc.py</code> case 1、case 4 regression 消失。其他 case 不受影響（OTP 的「驗證碼是654321」仍走 OTP recognizer，不受 PIN 變動影響）。
+        </p>
+      </section>
+
+      <section>
+        <h2>10 個代表案例：A / B / C 對照</h2>
+        <table>
+          <tr>
+            <th>類別</th>
+            <th class="a">A 原版</th>
+            <th class="b">B 新版</th>
+            <th class="c">C 合併版</th>
+          </tr>
+          <tr class="win-c">
+            <td>全形/民國年</td>
+            <td>生日是1985年5月1日<br>（正規化但無 DOB）</td>
+            <td class="warn">生日是民國七十四年五月一日<br>（原文保留）</td>
+            <td class="c">生日是1985年5月1日</td>
+          </tr>
+          <tr class="win-c">
+            <td>全形逗號/卡號</td>
+            <td>我叫[NAME_1],卡號是[CARD_1]</td>
+            <td>我叫[NAME]，卡號是[CARD]</td>
+            <td class="c">我叫[NAME_1],卡號是[CARD_1]</td>
+          </tr>
+          <tr class="win-c">
+            <td>STT 重複</td>
+            <td>嗯嗯我的卡號是[CARD_1]</td>
+            <td class="warn">嗯嗯嗯嗯我的卡號是[CARD]</td>
+            <td class="c">嗯嗯我的卡號是[CARD_1]</td>
+          </tr>
+          <tr class="win-c">
+            <td>中文數字</td>
+            <td>卡號末四碼是3335（無遮）</td>
+            <td class="warn">卡號末四碼是三三三五<br>（原文保留）</td>
+            <td class="c">卡號末四碼是3335（無遮）</td>
+          </tr>
+          <tr class="win-c">
+            <td>同人多次</td>
+            <td>[NAME_1],我就是[NAME_1]</td>
+            <td>[NAME]，我就是[NAME]</td>
+            <td class="c">[NAME_1],我就是[NAME_1]</td>
+          </tr>
+          <tr class="win-c">
+            <td>多人區分</td>
+            <td class="warn">[NAME_1]跟陳美玲一起來分行<br>（spaCy 漏陳美玲）</td>
+            <td>[NAME]跟[NAME]一起來分行</td>
+            <td class="c">[NAME_1]跟[NAME_2]一起來分行</td>
+          </tr>
+          <tr class="win-c">
+            <td>一般金額</td>
+            <td>今天氣溫30度,油價30元（不遮）</td>
+            <td class="warn">今天氣溫[AMOUNT]度，油價[AMOUNT]</td>
+            <td class="c">今天氣溫30度,油價30元（不遮）</td>
+          </tr>
+          <tr class="win-c">
+            <td>電話 vs 帳號</td>
+            <td class="warn">我電話[ACCOUNT_1]<br>（誤判）</td>
+            <td>我電話[PHONE]</td>
+            <td class="c">我電話[PHONE]</td>
+          </tr>
+          <tr class="win-c">
+            <td>驗證碼 OTP</td>
+            <td class="warn">驗證碼是654321<br>（無遮）</td>
+            <td>驗證碼是[OTP]</td>
+            <td class="c">驗證碼是[OTP]</td>
+          </tr>
+          <tr class="win-c">
+            <td>Email 邊界</td>
+            <td class="warn">[EMAIL]<br>（整段吃掉）</td>
+            <td>我的Email是[EMAIL]</td>
+            <td class="c">我的Email是[EMAIL]</td>
+          </tr>
+        </table>
+        <p class="xsmall" style="margin-top: 10px;">
+          C 每一列都等於或優於 A 與 B — 治理能力 ≥ A，辨識正確性 ≥ B
+        </p>
+      </section>
+
+      <section>
+        <h2>效能</h2>
+        <div class="three-col">
+          <div class="card a center">
+            <div class="muted xsmall">A 原版</div>
+            <div class="metric-big a">0.56 s</div>
+            <div class="xsmall">init</div>
+            <div class="metric-big a" style="margin-top: 10px;">6.8 ms</div>
+            <div class="xsmall">每句</div>
+          </div>
+          <div class="card b center">
+            <div class="muted xsmall">B 新版</div>
+            <div class="metric-big b">2.79 s</div>
+            <div class="xsmall">init</div>
+            <div class="metric-big b" style="margin-top: 10px;">113.1 ms</div>
+            <div class="xsmall">每句（CKIP CPU）</div>
+          </div>
+          <div class="card c center">
+            <div class="muted xsmall">C 合併版</div>
+            <div class="metric-big c">1.25 s</div>
+            <div class="xsmall">init</div>
+            <div class="metric-big c" style="margin-top: 10px;">35.6 ms</div>
+            <div class="xsmall">每句（CKIP CPU）</div>
+          </div>
+        </div>
+        <p class="small" style="margin-top: 30px;">
+          <span class="muted">單輪跑 B/C init 時間差別來自 CKIP 模型 disk cache；兩者架構時間相同。</span>
+        </p>
+        <p class="small warn">
+          <strong>效能差距</strong>：C 比 A 每句慢 5× — 這是換掉 spaCy MLP 成為 CKIP BERT 的必然代價。若流量大可考慮：
+        </p>
+        <ul class="small">
+          <li>CKIP 搭配 GPU 推論（可壓到個位數 ms）</li>
+          <li>Batch 多句一起進模型（CKIP 支援）</li>
+          <li>CKIP 用 <code>bert-tiny</code> 替代 <code>bert-base</code>（模型小 5×、速度快 3×，準確率會下降）</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>總體取捨矩陣</h2>
+        <table>
+          <tr>
+            <th>面向</th>
+            <th class="a">A 原版</th>
+            <th class="b">B 新版</th>
+            <th class="c">C 合併版</th>
+          </tr>
+          <tr>
+            <td>中文 PERSON NER</td>
+            <td class="warn">spaCy 漏抓</td>
+            <td class="b">✓ CKIP</td>
+            <td class="c">✓ CKIP</td>
+          </tr>
+          <tr>
+            <td>電話 vs 帳號</td>
+            <td class="warn">誤判</td>
+            <td class="b">✓</td>
+            <td class="c">✓</td>
+          </tr>
+          <tr>
+            <td>OTP 驗證碼</td>
+            <td class="warn">context 漏</td>
+            <td class="b">✓</td>
+            <td class="c">✓</td>
+          </tr>
+          <tr>
+            <td>Email 邊界</td>
+            <td class="warn">吃過頭</td>
+            <td class="b">✓ 精準</td>
+            <td class="c">✓ 精準</td>
+          </tr>
+          <tr>
+            <td>Normalizer（民國→西元⋯）</td>
+            <td class="a">✓</td>
+            <td class="warn">✗</td>
+            <td class="c">✓</td>
+          </tr>
+          <tr>
+            <td>Pseudonym 編號 _1/_2</td>
+            <td class="a">✓</td>
+            <td class="warn">✗</td>
+            <td class="c">✓</td>
+          </tr>
+          <tr>
+            <td>條件式 AMOUNT</td>
+            <td class="a">✓</td>
+            <td class="warn">✗</td>
+            <td class="c">✓</td>
+          </tr>
+          <tr>
+            <td>runtime presidio/spacy 模組</td>
+            <td class="warn">73</td>
+            <td class="b">0</td>
+            <td class="c">0</td>
+          </tr>
+          <tr>
+            <td>每句推論時間</td>
+            <td class="a">6.8 ms</td>
+            <td>113.1 ms</td>
+            <td>35.6 ms<span class="muted"> (cache 命中)</span></td>
+          </tr>
+        </table>
+      </section>
+
+      <section>
+        <h2>結論與下一步</h2>
+        <ul class="small">
+          <li><span class="c">C 已具備生產可用的所有條件</span>：辨識正確性繼承 B、治理能力繼承 A，且已修掉 normalize 暴露的 PIN 錯抓</li>
+          <li><strong>遷移建議</strong>：將 <code>comparison/pipeline_c.py</code> 收斂回主 repo 的 <code>pipeline.py</code>，逐步淘汰 <code>original_file/</code></li>
+          <li><strong>效能</strong>：若流量敏感，優先走 CKIP GPU 推論；其次考慮 batch / 小模型</li>
+          <li><strong>監控</strong>：需加 audit log；上線後監測 normalize 是否又暴露其他 regex 類似的 context 依賴問題（例如 STAFF_ID、CAMPAIGN）</li>
+          <li><strong>治理</strong>：保留 PseudonymTracker 同時檢視 <code>pseudonym_map</code> 的治理規範（哪些欄位需要可逆、哪些純遮罩）</li>
+        </ul>
+        <p class="small c" style="margin-top: 30px;">
+          <strong>一句話總結</strong>：A → B 是「先拆掉 Presidio 驗證可行性」，B → C 是「把治理功能補回來」，PIN fix 是「合併時不能忽視 regex 脆弱點」。每一步都有明確動機與代價。
+        </p>
+        <p class="xsmall" style="margin-top: 30px;">
+          <span class="muted">
+            簡報：<code>comparison/slides_evolution.html</code><br>
+            比較腳本：<code>comparison/compare_abc.py</code><br>
+            合併實作：<code>comparison/pipeline_c.py</code><br>
+            修正提交：<code>comparison/pure_recognizers.py</code> require_context
+          </span>
+        </p>
+      </section>
+
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+  <script>
+    Reveal.initialize({
+      hash: true,
+      slideNumber: 'c/t',
+      plugins: [RevealHighlight],
+      transition: 'slide',
+    });
+  </script>
+</body>
+
+</html>

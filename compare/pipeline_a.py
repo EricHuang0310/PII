@@ -23,7 +23,7 @@ from recognizers import (
     VerificationAnswerRecognizer,
 )
 
-from comparison.span import Span, Explanation
+from pipelines.b_pure.span import Span, Explanation
 from conflict_resolver import ConflictResolver
 from config import TOKEN_MAP as CONFIG_TOKEN_MAP
 

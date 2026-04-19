@@ -44,7 +44,7 @@ def _loaded(prefix: str) -> int:
 
 def run_pipeline_a(cases: List[str]) -> Dict[str, Any]:
     before_p = _loaded("presidio") + _loaded("spacy")
-    from comparison.pipeline_a import PipelineA
+    from compare.pipeline_a import PipelineA
 
     t0 = time.perf_counter()
     p = PipelineA(score_threshold=0.50)
@@ -73,7 +73,7 @@ def run_pipeline_a(cases: List[str]) -> Dict[str, Any]:
 
 def run_pipeline_b(cases: List[str]) -> Dict[str, Any]:
     before_p = _loaded("presidio") + _loaded("spacy")
-    from comparison.pipeline_b import PipelineB
+    from pipelines.b_pure.pipeline import PipelineB
 
     t0 = time.perf_counter()
     p = PipelineB(with_ckip=True)

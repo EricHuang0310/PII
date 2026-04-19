@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8">
+  <title>原版 pipeline vs pipeline_b — 遮罩效果比較</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+  <style>
+    :root {
+      --heading: #ffcc66;
+      --accent-a: #7cc7ff;
+      --accent-b: #8cffb3;
+      --warn: #ff9e7a;
+      --muted: #aaa;
+    }
+
+    body {
+      font-family: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+    }
+
+    .reveal h1,
+    .reveal h2,
+    .reveal h3 {
+      color: var(--heading);
+      font-family: inherit;
+    }
+
+    .reveal section {
+      text-align: left;
+    }
+
+    .reveal table {
+      font-size: 0.6em;
+    }
+
+    .reveal table th {
+      color: var(--heading);
+    }
+
+    .reveal pre {
+      font-size: 0.55em;
+    }
+
+    .reveal code {
+      color: var(--accent-a);
+    }
+
+    .a {
+      color: var(--accent-a);
+    }
+
+    .b {
+      color: var(--accent-b);
+    }
+
+    .warn {
+      color: var(--warn);
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .small {
+      font-size: 0.7em;
+    }
+
+    .xsmall {
+      font-size: 0.55em;
+      color: var(--muted);
+    }
+
+    .center {
+      text-align: center;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .metric-big {
+      font-size: 2.2em;
+      font-weight: bold;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 0.7em;
+      margin-right: 6px;
+    }
+
+    .pill-a {
+      background: #1e3a5f;
+      color: var(--accent-a);
+    }
+
+    .pill-b {
+      background: #1e4f33;
+      color: var(--accent-b);
+    }
+
+    .flow {
+      background: #1a1a1a;
+      border-left: 4px solid var(--accent-a);
+      padding: 8px 12px;
+      margin: 6px 0;
+      font-size: 0.75em;
+    }
+
+    .flow.b {
+      border-left-color: var(--accent-b);
+    }
+
+    .win-a {
+      background: rgba(124, 199, 255, 0.15);
+    }
+
+    .win-b {
+      background: rgba(140, 255, 179, 0.15);
+    }
+
+    .same {
+      background: rgba(255, 255, 255, 0.03);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <section class="center">
+        <h1>原版 pipeline vs pipeline_b</h1>
+        <h3>遮罩效果實測比較</h3>
+        <p class="small" style="margin-top: 40px;">
+          <span class="pill pill-a">A</span> <strong>原版</strong> Presidio + spaCy + 17 regex + normalizer + PseudonymTracker
+        </p>
+        <p class="small">
+          <span class="pill pill-b">B</span> <strong>新版</strong> CKIP + 20 pure regex（無 presidio/spacy runtime）
+        </p>
+        <p class="xsmall" style="margin-top: 40px;">Driver: <code>comparison/compare_original.py</code> · 2026-04-18</p>
+      </section>
+
+      <section>
+        <h2>比較基準</h2>
+        <p class="small">
+          A 為保留在 <code>original_file/</code> 的原版 pipeline（已補上 <code>supported_language="zh"</code>，
+          否則所有 custom regex 會被 Presidio 語言過濾器擋掉）。
+          B 為 <code>comparison/pipeline_b.py</code> — 拿掉 Presidio runtime，用 CKIP + 純 regex 重寫。
+        </p>
+        <table class="small">
+          <tr>
+            <th></th>
+            <th class="a">A 原版</th>
+            <th class="b">B 新版</th>
+          </tr>
+          <tr>
+            <td>Orchestrator</td>
+            <td>Presidio AnalyzerEngine</td>
+            <td>手寫 for-loop</td>
+          </tr>
+          <tr>
+            <td>NER</td>
+            <td>spaCy zh_core_web_sm</td>
+            <td>CKIP bert-base-chinese-ner</td>
+          </tr>
+          <tr>
+            <td>Regex recognizer</td>
+            <td>17（含 custom + EntityRecognizer）</td>
+            <td>20（pure, 含 Email）</td>
+          </tr>
+          <tr>
+            <td>Normalizer（全形/民國/STT filler）</td>
+            <td class="a">✓</td>
+            <td class="warn">✗</td>
+          </tr>
+          <tr>
+            <td>PseudonymTracker（_1 / _2 後綴）</td>
+            <td class="a">✓</td>
+            <td class="warn">✗（固定 token）</td>
+          </tr>
+          <tr>
+            <td>條件式 AMOUNT + speaker-aware boost</td>
+            <td class="a">✓</td>
+            <td class="warn">✗</td>
+          </tr>
+          <tr>
+            <td>ConflictResolver</td>
+            <td colspan="2" class="center muted">共用（已解除 presidio runtime 相依）</td>
+          </tr>
+        </table>
+      </section>
+
+      <section>
+        <h2>兩側流程</h2>
+        <div class="two-col">
+          <div>
+            <h3 class="a">A 原版</h3>
+            <div class="flow">text</div>
+            <div class="flow">normalize（全形→半形、民國→西元）</div>
+            <div class="flow">Presidio AnalyzerEngine</div>
+            <div class="flow">├─ spaCy NER</div>
+            <div class="flow">└─ 17 custom recognizer</div>
+            <div class="flow">bank rules（條件式 AMOUNT + speaker boost）</div>
+            <div class="flow">ConflictResolver</div>
+            <div class="flow">PseudonymTracker → [NAME_1]、[CARD_1]</div>
+            <div class="flow">per-span replace + audit log</div>
+          </div>
+          <div>
+            <h3 class="b">B 新版</h3>
+            <div class="flow b">text（不 normalize）</div>
+            <div class="flow b">for rec in [...]: rec.analyze(text)</div>
+            <div class="flow b">├─ 20 pure regex recognizer</div>
+            <div class="flow b">└─ CKIPNer（bert-base）</div>
+            <div class="flow b">ConflictResolver</div>
+            <div class="flow b">固定 token → [NAME]、[CARD]</div>
+            <div class="flow b">per-span replace</div>
+          </div>
+        </div>
+        <p class="xsmall">B 側 runtime 完全不 import presidio/spacy；ConflictResolver 透過 duck-typed Span 被兩側重用</p>
+      </section>
+
+      <section>
+        <h2>10 個測試案例</h2>
+        <ol class="small">
+          <li>我叫王小明，卡號是1234567890123456</li>
+          <li>我電話0912345678</li>
+          <li>住在台北市忠孝東路100號</li>
+          <li>驗證碼是654321</li>
+          <li>轉帳到帳號123456789012</li>
+          <li>我家住在好市多隔壁的SEVEN樓上</li>
+          <li>生日是民國七十四年五月一日</li>
+          <li>我的身分證A123456789</li>
+          <li>母親的姓名是陳美玲</li>
+          <li>我的Email是foo@example.com</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>逐句結果</h2>
+        <table style="font-size: 0.48em;">
+          <tr>
+            <th>#</th>
+            <th>原文</th>
+            <th class="a">A 原版</th>
+            <th class="b">B 新版</th>
+            <th>判定</th>
+          </tr>
+          <tr class="same">
+            <td>1</td>
+            <td>王小明 + 16 位卡號</td>
+            <td>我叫[NAME_1],卡號是[CARD_1]</td>
+            <td>我叫[NAME]，卡號是[CARD]</td>
+            <td>等價（A 有 _1 後綴 + 全形→半形）</td>
+          </tr>
+          <tr class="win-b">
+            <td>2</td>
+            <td>我電話0912345678</td>
+            <td class="warn">我電話[ACCOUNT_1]</td>
+            <td class="b">我電話[PHONE]</td>
+            <td class="b">B 對（A 誤判為帳號）</td>
+          </tr>
+          <tr class="same">
+            <td>3</td>
+            <td>台北市忠孝東路100號</td>
+            <td>住在[ADDRESS]</td>
+            <td>住在[ADDRESS]</td>
+            <td>一致</td>
+          </tr>
+          <tr class="win-b">
+            <td>4</td>
+            <td>驗證碼是654321</td>
+            <td class="warn">驗證碼是654321（未遮）</td>
+            <td class="b">驗證碼是[OTP]</td>
+            <td class="b">B 對</td>
+          </tr>
+          <tr class="same">
+            <td>5</td>
+            <td>轉帳到帳號123456789012</td>
+            <td>轉帳到帳號[ACCOUNT_1]</td>
+            <td>轉帳到帳號[ACCOUNT]</td>
+            <td>一致（token 命名不同）</td>
+          </tr>
+          <tr class="same">
+            <td>6</td>
+            <td>好市多隔壁的SEVEN樓上</td>
+            <td>[ADDRESS]EVEN樓上</td>
+            <td>[ADDRESS]EVEN樓上</td>
+            <td>一致（兩側皆吃掉 S）</td>
+          </tr>
+          <tr class="win-a">
+            <td>7</td>
+            <td>民國七十四年五月一日</td>
+            <td class="a">生日是1985年5月1日（正規化）</td>
+            <td>生日是民國七十四年五月一日</td>
+            <td class="a">A 有 normalize（但兩側 DOB 皆漏抓）</td>
+          </tr>
+          <tr class="same">
+            <td>8</td>
+            <td>身分證A123456789</td>
+            <td>我的身分證[ID]</td>
+            <td>我的身分證[ID]</td>
+            <td>一致</td>
+          </tr>
+          <tr class="win-b">
+            <td>9</td>
+            <td>母親的姓名是<strong>陳美玲</strong></td>
+            <td class="warn">母親[VERIFICATION_ANSWER][VERIFICATION_ANSWER]</td>
+            <td class="b">母親的姓名是[NAME]</td>
+            <td class="b">B 對</td>
+          </tr>
+          <tr class="win-b">
+            <td>10</td>
+            <td>我的Email是foo@example.com</td>
+            <td class="warn">[EMAIL]（整段被吃掉）</td>
+            <td class="b">我的Email是[EMAIL]</td>
+            <td class="b">B 更精準</td>
+          </tr>
+        </table>
+        <p class="xsmall" style="margin-top: 10px;">
+          遮罩完全一致 3/10；B 勝 4 案；A 勝 1 案（normalize 可讀性）；token 命名差 2 案
+        </p>
+      </section>
+
+      <section>
+        <h2>A 勝出：<span class="a">normalizer</span></h2>
+        <p class="small"><strong>Case 1</strong>：全形逗號 → 半形</p>
+        <pre><code class="language-text">原文:   我叫王小明，卡號是1234567890123456
+A 正規化: 我叫王小明,卡號是1234567890123456
+A 遮罩:   我叫[NAME_1],卡號是[CARD_1]</code></pre>
+        <p class="small"><strong>Case 7</strong>：民國紀年 + 中文數字 → 西元</p>
+        <pre><code class="language-text">原文:   生日是民國七十四年五月一日
+A 正規化: 生日是1985年5月1日
+A 遮罩:   生日是1985年5月1日（DOB recognizer 未匹配，但可讀性還原了）
+B 遮罩:   生日是民國七十四年五月一日（原文保留，無任何處理）</code></pre>
+        <p class="small warn">
+          不過 case 7 A 雖然正規化了日期，<code>DOB_SLASH</code> 仍需 <code>/</code> 或 <code>-</code>
+          分隔符才會匹配 → 還是沒遮。等於只做了一半工作。
+        </p>
+      </section>
+
+      <section>
+        <h2>B 勝出 1：<span class="b">電話 vs 帳號</span></h2>
+        <p class="small"><strong>原文</strong>：我電話0912345678</p>
+        <div class="two-col">
+          <div class="small">
+            <h3 class="a">A 原版</h3>
+            <pre><code class="language-text">我電話[ACCOUNT_1]
+→ TW_BANK_ACCOUNT('0912345678')</code></pre>
+            <p class="warn">10 位數字被銀行帳號 regex 搶走</p>
+            <p>原版 <code>TW_BANK_ACCOUNT</code> pattern 是
+              <code>\d{10,14}</code> — 沒排除 09 開頭的手機號</p>
+            <p>ConflictResolver 在原版權重下 ACCOUNT 勝</p>
+          </div>
+          <div class="small">
+            <h3 class="b">B 新版</h3>
+            <pre><code class="language-text">我電話[PHONE]
+→ TW_PHONE('0912345678')</code></pre>
+            <p class="b">正確判定為手機</p>
+            <p>新版 bank account regex 是
+              <code>(?!09\d{8})\d{10,14}</code> —
+              用 negative lookahead 排除 09 開頭</p>
+            <p>同時優先級公式改為 risk-dominant</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>B 勝出 2：<span class="b">OTP context</span></h2>
+        <p class="small"><strong>原文</strong>：驗證碼是654321</p>
+        <div class="two-col">
+          <div class="small">
+            <h3 class="a">A 原版</h3>
+            <pre><code class="language-text">驗證碼是654321
+(無任何實體偵測)</code></pre>
+            <p class="warn">OTP regex <code>\d{6}</code> 有打到，
+              但原始 score 0.45 &lt; threshold 0.50</p>
+            <p>需靠 context 加分才能過門檻。
+              原版 <code>OTP_CONTEXT</code> 沒有「驗證碼」關鍵字 → 沒加分 → 被濾掉</p>
+          </div>
+          <div class="small">
+            <h3 class="b">B 新版</h3>
+            <pre><code class="language-text">驗證碼是[OTP]
+→ OTP('654321')</code></pre>
+            <p class="b">B 的 pure regex OTP score 為 0.5，
+              且 context window boost 直接在 recognizer 內實作</p>
+            <p>OTP context 已更新為包含「驗證碼、OTP、驗證 code」</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>B 勝出 3：<span class="b">陳美玲</span></h2>
+        <p class="small"><strong>原文</strong>：母親的姓名是陳美玲</p>
+        <div class="two-col">
+          <div class="small">
+            <h3 class="a">A 原版</h3>
+            <pre><code class="language-text">母親[VERIFICATION_ANSWER][VERIFICATION_ANSWER]
+→ VERIFICATION_ANSWER('的姓名是陳')
+→ VERIFICATION_ANSWER('美玲')</code></pre>
+            <p class="warn">兩個問題同時發生：</p>
+            <p>1. spaCy <code>zh_core_web_sm</code> 漏抓 PERSON「陳美玲」</p>
+            <p>2. <code>VerificationAnswerRecognizer</code> 的 regex
+              <code>[\u4e00-\u9fff]{2,5}|\d{6,8}</code> 過度匹配 —
+              在「姓名是」trigger 後 30 字 window 內把任意 2-5 中文字都當答案</p>
+          </div>
+          <div class="small">
+            <h3 class="b">B 新版</h3>
+            <pre><code class="language-text">母親的姓名是[NAME]
+→ PERSON('陳美玲')</code></pre>
+            <p class="b">CKIP 直接抓到 PERSON</p>
+            <p>新版 <code>VerificationAnswerRecognizer</code> 的 regex
+              已改成 <code>\d{6,8}</code> —
+              CJK 交給 CKIP 處理</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>B 勝出 4：<span class="b">Email span 精準度</span></h2>
+        <p class="small"><strong>原文</strong>：我的Email是foo@example.com</p>
+        <div class="two-col">
+          <div class="small">
+            <h3 class="a">A 原版</h3>
+            <pre><code class="language-text">[EMAIL]
+→ EMAIL_ADDRESS('我的Email是foo@example.com')</code></pre>
+            <p class="warn">整段都被當 EMAIL_ADDRESS</p>
+            <p>Presidio 內建 <code>EmailRecognizer</code> 與 context 互動過頭，
+              把「我的Email是」也吸進 span</p>
+          </div>
+          <div class="small">
+            <h3 class="b">B 新版</h3>
+            <pre><code class="language-text">我的Email是[EMAIL]
+→ EMAIL_ADDRESS('foo@example.com')</code></pre>
+            <p class="b">純 regex 精準抓 email 格式</p>
+            <p><code>[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}</code></p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>性能</h2>
+        <div class="two-col">
+          <div class="center">
+            <div class="muted small">A 初始化</div>
+            <div class="metric-big a">0.58s</div>
+            <div class="muted small" style="margin-top: 20px;">A 每句遮罩</div>
+            <div class="metric-big a">7.6ms</div>
+            <div class="muted small" style="margin-top: 20px;">runtime 載入<br>presidio+spacy 模組</div>
+            <div class="metric-big a">73</div>
+          </div>
+          <div class="center">
+            <div class="muted small">B 初始化</div>
+            <div class="metric-big b">2.75s</div>
+            <div class="muted small" style="margin-top: 20px;">B 每句遮罩</div>
+            <div class="metric-big b">127.8ms</div>
+            <div class="muted small" style="margin-top: 20px;">runtime 載入<br>presidio+spacy 模組</div>
+            <div class="metric-big b">0</div>
+          </div>
+        </div>
+        <p class="small center" style="margin-top: 30px;">
+          <span class="warn">B 推論慢約 16.8×（CPU）；改用 GPU 推論可解決此瓶頸</span>
+        </p>
+      </section>
+
+      <section>
+        <h2>取捨矩陣</h2>
+        <table>
+          <tr>
+            <th>面向</th>
+            <th class="a">A 原版</th>
+            <th class="b">B 新版</th>
+          </tr>
+          <tr>
+            <td>中文 PERSON NER 品質</td>
+            <td class="warn">弱（spaCy 漏抓）</td>
+            <td class="b">✓ 強（CKIP）</td>
+          </tr>
+          <tr>
+            <td>電話 vs 帳號區分</td>
+            <td class="warn">誤判</td>
+            <td class="b">✓ 正確（negative lookahead）</td>
+          </tr>
+          <tr>
+            <td>OTP context 完整性</td>
+            <td class="warn">缺「驗證碼」</td>
+            <td class="b">✓ 完整</td>
+          </tr>
+          <tr>
+            <td>VERIFICATION_ANSWER 精準度</td>
+            <td class="warn">CJK 過度匹配</td>
+            <td class="b">✓ 只抓數字</td>
+          </tr>
+          <tr>
+            <td>Email span 精準度</td>
+            <td class="warn">吃過頭</td>
+            <td class="b">✓ 精準</td>
+          </tr>
+          <tr>
+            <td>Normalizer（民國→西元等）</td>
+            <td class="a">✓</td>
+            <td class="warn">✗</td>
+          </tr>
+          <tr>
+            <td>PseudonymTracker（同值一致、_1/_2 編號）</td>
+            <td class="a">✓</td>
+            <td class="warn">✗（固定 token）</td>
+          </tr>
+          <tr>
+            <td>推論速度（CPU）</td>
+            <td class="a">✓ 7.6 ms/句</td>
+            <td>127.8 ms/句</td>
+          </tr>
+          <tr>
+            <td>冷啟動</td>
+            <td class="a">✓ 0.58 s</td>
+            <td>2.75 s</td>
+          </tr>
+          <tr>
+            <td>runtime 依賴（presidio+spacy 模組數）</td>
+            <td class="warn">73</td>
+            <td class="b">✓ 0</td>
+          </tr>
+        </table>
+      </section>
+
+      <section>
+        <h2>結論 — 該往哪邊走？</h2>
+        <ul class="small">
+          <li><strong>辨識正確性</strong>：B 在 4 個案例優於 A，A 只在 1 個案例因 normalizer 勝出 — <span class="b">B 的 recognizer 設計更接近生產可用</span></li>
+          <li><strong>效能</strong>：B CPU 慢 16.8×，但模型可切 GPU；<br>A 的 presidio runtime ~73 模組是明確重量</li>
+          <li><strong>功能完整性</strong>：A 有 normalizer / pseudonym / 條件式 AMOUNT 等 — 這些都是 <span class="a">可移植的獨立模組</span>，可以補回 B 側</li>
+          <li class="warn"><strong>建議路線</strong>：以 B 為骨幹 + 把 A 的 normalizer、PseudonymTracker、bank rules 合併進來</li>
+        </ul>
+        <p class="small" style="margin-top: 30px;">
+          <span class="muted">投影片：<code>comparison/slides.html</code>
+            ・比較腳本：<code>comparison/compare_original.py</code></span>
+        </p>
+      </section>
+
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+  <script>
+    Reveal.initialize({
+      hash: true,
+      slideNumber: 'c/t',
+      plugins: [RevealHighlight],
+      transition: 'slide',
+    });
+  </script>
+</body>
+
+</html>

@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from typing import List
 
-from comparison.pure_recognizers import Recognizer
-from comparison.span import Span, Explanation
+from pipelines.b_pure.pure_recognizers import Recognizer
+from pipelines.b_pure.span import Span, Explanation
 
 
 class CKIPNer(Recognizer):

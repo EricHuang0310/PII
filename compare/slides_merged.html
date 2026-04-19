@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8">
+  <title>pipeline_b vs pipeline_c（合併版） — 遮罩效果比較</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+  <style>
+    :root {
+      --heading: #ffcc66;
+      --accent-b: #8cffb3;
+      --accent-c: #c79cff;
+      --warn: #ff9e7a;
+      --muted: #aaa;
+    }
+
+    body {
+      font-family: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+    }
+
+    .reveal h1,
+    .reveal h2,
+    .reveal h3 {
+      color: var(--heading);
+      font-family: inherit;
+    }
+
+    .reveal section {
+      text-align: left;
+    }
+
+    .reveal table {
+      font-size: 0.55em;
+    }
+
+    .reveal table th {
+      color: var(--heading);
+    }
+
+    .reveal pre {
+      font-size: 0.55em;
+    }
+
+    .reveal code {
+      color: var(--accent-c);
+    }
+
+    .b { color: var(--accent-b); }
+    .c { color: var(--accent-c); }
+    .warn { color: var(--warn); }
+    .muted { color: var(--muted); }
+
+    .small { font-size: 0.7em; }
+    .xsmall { font-size: 0.55em; color: var(--muted); }
+    .center { text-align: center; }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .metric-big {
+      font-size: 2.2em;
+      font-weight: bold;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 0.7em;
+      margin-right: 6px;
+    }
+
+    .pill-b {
+      background: #1e4f33;
+      color: var(--accent-b);
+    }
+
+    .pill-c {
+      background: #3a2950;
+      color: var(--accent-c);
+    }
+
+    .flow {
+      background: #1a1a1a;
+      border-left: 4px solid var(--accent-b);
+      padding: 8px 12px;
+      margin: 6px 0;
+      font-size: 0.75em;
+    }
+
+    .flow.c {
+      border-left-color: var(--accent-c);
+    }
+
+    .flow.add {
+      border-left-color: var(--warn);
+      background: #2a1f14;
+    }
+
+    .win-b { background: rgba(140, 255, 179, 0.15); }
+    .win-c { background: rgba(199, 156, 255, 0.18); }
+    .reg   { background: rgba(255, 158, 122, 0.18); }
+    .same  { background: rgba(255, 255, 255, 0.03); }
+  </style>
+</head>
+
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <section class="center">
+        <h1>pipeline_b vs pipeline_c</h1>
+        <h3>合併版的實際增益</h3>
+        <p class="small" style="margin-top: 40px;">
+          <span class="pill pill-b">B</span> 原本的 CKIP + 20 pure regex（不 import presidio / spacy）
+        </p>
+        <p class="small">
+          <span class="pill pill-c">C</span> B 骨幹 + <strong>normalizer</strong> + <strong>PseudonymTracker</strong> + <strong>bank rules</strong>
+        </p>
+        <p class="xsmall" style="margin-top: 40px;">Driver: <code>comparison/compare_bc.py</code> · 2026-04-18</p>
+      </section>
+
+      <section>
+        <h2>為什麼做 C？</h2>
+        <p class="small">
+          前一輪比較顯示原版 A 有三個 B 沒有的能力：
+        </p>
+        <ul class="small">
+          <li><span class="c">normalizer</span>：全形/民國紀年/中文數字/STT 語助詞壓縮</li>
+          <li><span class="c">PseudonymTracker</span>：<code>[NAME_1]</code> / <code>[NAME_2]</code> — 同人一致、多人可區分</li>
+          <li><span class="c">bank rules</span>：條件式 AMOUNT（需與帳號/卡號並存才遮）+ speaker-aware boost</li>
+        </ul>
+        <p class="small">
+          C 把這三件事加進 B 的骨幹，且保留 B 的優點（CKIP NER、Email 精準、電話不誤判、OTP context 完整、runtime 不 import presidio/spacy）。
+        </p>
+        <p class="xsmall">
+          實作：<code>comparison/pipeline_c.py</code>（重用 <code>original_file.normalizer</code> + <code>original_file.pseudonym</code>；bank rules 重新以 <code>Span</code> 介面實作，避免 presidio 相依）
+        </p>
+      </section>
+
+      <section>
+        <h2>Pipeline C 架構</h2>
+        <div class="two-col">
+          <div>
+            <h3 class="b">B（原）</h3>
+            <div class="flow">text</div>
+            <div class="flow">for rec in [...]: rec.analyze(text)</div>
+            <div class="flow">├─ 20 pure regex</div>
+            <div class="flow">└─ CKIPNer</div>
+            <div class="flow">ConflictResolver</div>
+            <div class="flow">固定 token</div>
+            <div class="flow">per-span replace</div>
+          </div>
+          <div>
+            <h3 class="c">C（合併）</h3>
+            <div class="flow c add">+ normalize()</div>
+            <div class="flow c">for rec in [...]: rec.analyze(normalized)</div>
+            <div class="flow c">├─ 20 pure regex</div>
+            <div class="flow c">└─ CKIPNer</div>
+            <div class="flow c add">+ 條件式 AMOUNT（需 ACCOUNT/CARD 觸發）</div>
+            <div class="flow c add">+ speaker-aware boost（fallback）</div>
+            <div class="flow c">ConflictResolver</div>
+            <div class="flow c add">+ PseudonymTracker → [NAME_1]、[CARD_1]</div>
+            <div class="flow c">per-span replace</div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>10 個針對合併效果設計的案例</h2>
+        <ol class="small">
+          <li><strong>全形/民國年</strong>：生日是民國七十四年五月一日</li>
+          <li><strong>全形逗號</strong>：我叫王小明，卡號是1234567890123456</li>
+          <li><strong>STT 重複</strong>：嗯嗯嗯嗯我的卡號是1234567890123456</li>
+          <li><strong>中文數字</strong>：卡號末四碼是三三三五</li>
+          <li><strong>同人多次</strong>：我叫王小明，我就是王小明</li>
+          <li><strong>多人區分</strong>：王小明跟陳美玲一起來分行</li>
+          <li><strong>一般金額</strong>：今天氣溫30度，油價30元</li>
+          <li><strong>交易金額</strong>：幫我轉帳500元到帳號123456789012</li>
+          <li><strong>條件式 AMOUNT</strong>：這張卡號1234567890123456扣了1000元</li>
+          <li><strong>電話 vs 帳號</strong>：我電話0912345678</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>逐案結果</h2>
+        <table>
+          <tr>
+            <th>#</th>
+            <th>類別</th>
+            <th class="b">B</th>
+            <th class="c">C</th>
+            <th>判定</th>
+          </tr>
+          <tr class="reg">
+            <td>1</td>
+            <td>全形/民國年</td>
+            <td>生日是民國七十四年五月一日（未遮）</td>
+            <td>生日是<span class="warn">[PIN]</span>年5月1日</td>
+            <td class="warn">regression（1985 被 PIN 吃掉）</td>
+          </tr>
+          <tr class="win-c">
+            <td>2</td>
+            <td>全形逗號</td>
+            <td>我叫[NAME]，卡號是[CARD]</td>
+            <td>我叫[NAME_1]<strong>,</strong>卡號是[CARD_1]</td>
+            <td class="c">C 有編號 + 半形</td>
+          </tr>
+          <tr class="win-c">
+            <td>3</td>
+            <td>STT 重複</td>
+            <td>嗯嗯嗯嗯我的卡號是[CARD]</td>
+            <td>嗯嗯我的卡號是[CARD_1]</td>
+            <td class="c">C 壓縮 STT filler</td>
+          </tr>
+          <tr class="reg">
+            <td>4</td>
+            <td>中文數字</td>
+            <td>卡號末四碼是三三三五（未遮）</td>
+            <td>卡號末四碼是<span class="warn">[PIN]</span></td>
+            <td class="warn">regression（3335 被 PIN 吃掉）</td>
+          </tr>
+          <tr class="win-c">
+            <td>5</td>
+            <td>同人多次</td>
+            <td>我叫[NAME]，我就是[NAME]</td>
+            <td>我叫[NAME_1]<strong>,</strong>我就是[NAME_1]</td>
+            <td class="c">C 同值一致</td>
+          </tr>
+          <tr class="win-c">
+            <td>6</td>
+            <td>多人區分</td>
+            <td>[NAME]跟[NAME]一起來分行</td>
+            <td>[NAME_1]跟[NAME_2]一起來分行</td>
+            <td class="c">C 兩人可區分</td>
+          </tr>
+          <tr class="win-c">
+            <td>7</td>
+            <td>一般金額</td>
+            <td class="warn">今天氣溫[AMOUNT]度，油價[AMOUNT]</td>
+            <td>今天氣溫30度<strong>,</strong>油價30元</td>
+            <td class="c">C 條件式 AMOUNT 正確放行</td>
+          </tr>
+          <tr class="win-c">
+            <td>8</td>
+            <td>交易金額</td>
+            <td>幫我轉帳[AMOUNT]到帳號[ACCOUNT]</td>
+            <td>幫我轉帳[AMOUNT]到帳號[ACCOUNT_1]</td>
+            <td class="c">C 有帳號編號</td>
+          </tr>
+          <tr class="win-c">
+            <td>9</td>
+            <td>條件式 AMOUNT</td>
+            <td>這張卡號[CARD]扣了[AMOUNT]</td>
+            <td>這張卡號[CARD_1]扣了[AMOUNT]</td>
+            <td class="c">C 編號 + AMOUNT 保留</td>
+          </tr>
+          <tr class="same">
+            <td>10</td>
+            <td>電話</td>
+            <td>我電話[PHONE]</td>
+            <td>我電話[PHONE]</td>
+            <td>一致</td>
+          </tr>
+        </table>
+        <p class="xsmall">C 勝 6 案、一致 1 案、regression 2 案；合併後需搭配下游 regex 調整（見後）</p>
+      </section>
+
+      <section>
+        <h2>C 勝 1：<span class="c">STT filler 壓縮</span></h2>
+        <p class="small"><strong>原文</strong>：嗯嗯嗯嗯我的卡號是1234567890123456</p>
+        <div class="two-col">
+          <div class="small">
+            <h3 class="b">B</h3>
+            <pre><code class="language-text">嗯嗯嗯嗯我的卡號是[CARD]</code></pre>
+            <p>STT 語助詞保留，下游分析器得處理噪音</p>
+          </div>
+          <div class="small">
+            <h3 class="c">C</h3>
+            <pre><code class="language-text">normalize → 嗯嗯我的卡號是1234567890123456
+mask     → 嗯嗯我的卡號是[CARD_1]</code></pre>
+            <p class="c">3+ 個重複語助詞壓縮成 2 個</p>
+            <p class="xsmall">規則：<code>_STT_FILLER_CHARS = "啊喔嗯欸哦呢吧吼哈呀哎唉那"</code>，只壓語助詞，不動一般中文字</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>C 勝 2：<span class="c">Pseudonym 同值一致</span></h2>
+        <p class="small"><strong>原文</strong>：我叫王小明，我就是王小明</p>
+        <div class="two-col">
+          <div class="small">
+            <h3 class="b">B</h3>
+            <pre><code class="language-text">我叫[NAME]，我就是[NAME]</code></pre>
+            <p class="warn">兩次出現 token 相同，但無從確認是否為同一人</p>
+          </div>
+          <div class="small">
+            <h3 class="c">C</h3>
+            <pre><code class="language-text">我叫[NAME_1],我就是[NAME_1]
+pseudonym_map:
+  PERSON: {'王小明': '[NAME_1]'}</code></pre>
+            <p class="c">tracker 記住 原值→token 的對應</p>
+            <p>審計時可回推「同一人被說了幾次」</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>C 勝 3：<span class="c">多人可區分</span></h2>
+        <p class="small"><strong>原文</strong>：王小明跟陳美玲一起來分行</p>
+        <div class="two-col">
+          <div class="small">
+            <h3 class="b">B</h3>
+            <pre><code class="language-text">[NAME]跟[NAME]一起來分行</code></pre>
+            <p class="warn">兩個 NAME 混在一起，無法辨識是兩個不同人</p>
+          </div>
+          <div class="small">
+            <h3 class="c">C</h3>
+            <pre><code class="language-text">[NAME_1]跟[NAME_2]一起來分行
+pseudonym_map:
+  PERSON:
+    '王小明': '[NAME_1]'
+    '陳美玲': '[NAME_2]'</code></pre>
+            <p class="c">不同原值 → 不同編號</p>
+            <p>整通對話可持續追蹤多方實體</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>C 勝 4：<span class="c">條件式 AMOUNT</span></h2>
+        <p class="small"><strong>原文</strong>：今天氣溫30度，油價30元</p>
+        <div class="two-col">
+          <div class="small">
+            <h3 class="b">B</h3>
+            <pre><code class="language-text">今天氣溫[AMOUNT]度，油價[AMOUNT]</code></pre>
+            <p class="warn">「30 度」「30 元」都被當 AMOUNT 遮</p>
+            <p>一般日常金額被過度遮罩 → 語料可讀性下降</p>
+          </div>
+          <div class="small">
+            <h3 class="c">C</h3>
+            <pre><code class="language-text">今天氣溫30度,油價30元（無遮）</code></pre>
+            <p class="c">無 ACCOUNT / CARD 觸發 → AMOUNT 被 drop</p>
+            <p class="xsmall">規則：<code>AMOUNT_TRIGGER_ENTITIES = {TW_BANK_ACCOUNT, TW_CREDIT_CARD}</code>；proximity 60 字內</p>
+            <p>反之，case 9「卡號⋯扣了1000元」AMOUNT 保留</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="warn">Regression：normalize 撞到 PIN regex</h2>
+        <p class="small"><strong>Case 1</strong>：生日是民國七十四年五月一日</p>
+        <pre><code class="language-text">C 正規化: 生日是1985年5月1日
+C 遮罩:   生日是[PIN]年5月1日  ← 「1985」被當 PIN</code></pre>
+        <p class="small"><strong>Case 4</strong>：卡號末四碼是三三三五</p>
+        <pre><code class="language-text">C 正規化: 卡號末四碼是3335
+C 遮罩:   卡號末四碼是[PIN]  ← 「3335」被當 PIN</code></pre>
+        <p class="small warn">
+          <strong>根因</strong>：PIN recognizer pattern 是 <code>\d{4,6}</code> score 0.30，無需 context 就達 threshold 後 resolver 會保留。normalize 把中文數字轉成 4 位數字後就命中 PIN pattern。
+        </p>
+        <p class="small">
+          <strong>修正方向</strong>（任選）：
+        </p>
+        <ul class="small">
+          <li>提高 PIN 門檻（0.30 → 0.55），要求 PIN context 關鍵字才能過</li>
+          <li>DOB recognizer 加入 <code>\d{4}年\d{1,2}月\d{1,2}日</code> pattern，讓 1985年5月1日 優先被 DOB 吃</li>
+          <li>ConflictResolver 層級加入「PIN 需 context」硬約束</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>性能</h2>
+        <div class="two-col">
+          <div class="center">
+            <div class="muted small">B 初始化</div>
+            <div class="metric-big b">3.77s</div>
+            <div class="muted small" style="margin-top: 20px;">B 每句遮罩</div>
+            <div class="metric-big b">101.8ms</div>
+          </div>
+          <div class="center">
+            <div class="muted small">C 初始化</div>
+            <div class="metric-big c">1.21s</div>
+            <div class="muted small" style="margin-top: 20px;">C 每句遮罩</div>
+            <div class="metric-big c">36.4ms</div>
+          </div>
+        </div>
+        <p class="small center" style="margin-top: 30px;">
+          C 的時間看起來比 B 快是因為 <span class="muted">第二次 CKIP 載入時模型權重已在 disk cache</span>，非架構差異。
+          合併本身僅新增 <em>normalize + tracker + bank rules</em>（純 Python regex / dict ops），對推論時間幾乎沒有負擔。
+        </p>
+      </section>
+
+      <section>
+        <h2>取捨矩陣</h2>
+        <table>
+          <tr>
+            <th>面向</th>
+            <th class="b">B</th>
+            <th class="c">C</th>
+          </tr>
+          <tr>
+            <td>CKIP NER / Email 精準度</td>
+            <td colspan="2" class="center muted">相同（C 沿用 B 的 recognizer）</td>
+          </tr>
+          <tr>
+            <td>全形/民國/中文數字 正規化</td>
+            <td class="warn">✗</td>
+            <td class="c">✓</td>
+          </tr>
+          <tr>
+            <td>STT 語助詞壓縮</td>
+            <td class="warn">✗</td>
+            <td class="c">✓</td>
+          </tr>
+          <tr>
+            <td>同人一致 / 多人可區分</td>
+            <td class="warn">✗</td>
+            <td class="c">✓ (_1 / _2)</td>
+          </tr>
+          <tr>
+            <td>一般金額不誤遮</td>
+            <td class="warn">✗</td>
+            <td class="c">✓ 條件式 AMOUNT</td>
+          </tr>
+          <tr>
+            <td>Speaker-aware fallback boost</td>
+            <td class="warn">✗</td>
+            <td class="c">✓（需 diarization=False 觸發）</td>
+          </tr>
+          <tr>
+            <td>pseudonym_map（審計回查）</td>
+            <td class="warn">✗</td>
+            <td class="c">✓</td>
+          </tr>
+          <tr>
+            <td>runtime 依賴（presidio/spacy 模組）</td>
+            <td class="b">0</td>
+            <td class="c">0</td>
+          </tr>
+          <tr>
+            <td>normalize 後 PIN 誤抓</td>
+            <td class="b">不會發生</td>
+            <td class="warn">需後續修 PIN threshold / 加 DOB pattern</td>
+          </tr>
+        </table>
+      </section>
+
+      <section>
+        <h2>結論</h2>
+        <ul class="small">
+          <li><strong>6 個案例 C 明顯優於 B</strong> — 涵蓋 normalize / pseudonym / bank rules 三大類能力</li>
+          <li><strong>1 個案例一致</strong> — CKIP + Email / 電話 / OTP 等核心能力都被沿用</li>
+          <li><strong>2 個案例 C 引入 regression</strong> — normalize 暴露出 PIN regex (<code>\d{4,6}</code> @0.30) 的 context 依賴不足</li>
+          <li class="warn"><strong>下一步</strong>：PIN threshold 拉高到 0.55 並強制需要 context，同時 DOB recognizer 補 <code>\d{4}年\d{1,2}月\d{1,2}日</code></li>
+          <li>完成上述修正後，C 可以直接取代 B 作為主 pipeline</li>
+        </ul>
+        <p class="small" style="margin-top: 30px;">
+          <span class="muted">投影片：<code>comparison/slides_merged.html</code>
+            ・比較腳本：<code>comparison/compare_bc.py</code>
+            ・合併實作：<code>comparison/pipeline_c.py</code></span>
+        </p>
+      </section>
+
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+  <script>
+    Reveal.initialize({
+      hash: true,
+      slideNumber: 'c/t',
+      plugins: [RevealHighlight],
+      transition: 'slide',
+    });
+  </script>
+</body>
+
+</html>

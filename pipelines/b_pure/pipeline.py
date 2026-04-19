@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from comparison.ckip_wrap import CKIPNer
-from comparison.pure_recognizers import Recognizer, get_pure_recognizers
-from comparison.span import Span
+from pipelines.b_pure.ckip_wrap import CKIPNer
+from pipelines.b_pure.pure_recognizers import Recognizer, get_pure_recognizers
+from pipelines.b_pure.span import Span
 from conflict_resolver import ConflictResolver   # duck-typed；resolver 已解除 presidio runtime 相依
 
 

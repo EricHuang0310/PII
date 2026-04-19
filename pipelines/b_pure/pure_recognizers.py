@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import List, Optional, Tuple
 
-from comparison.span import Span, Explanation
+from pipelines.b_pure.span import Span, Explanation
 
 
 _CONTEXT_WINDOW = 30
@@ -34,11 +34,13 @@ class PurePatternRecognizer(Recognizer):
 
     def __init__(self, entity_type: str,
                  patterns: List[Tuple[str, str, float]],
-                 context_keywords: List[str]):
+                 context_keywords: List[str],
+                 require_context: bool = False):
         self.entity_type = entity_type
         self.compiled = [(name, re.compile(pat), score)
                          for name, pat, score in patterns]
         self.context_keywords = context_keywords
+        self.require_context = require_context
         self.name = f"Pure_{entity_type}"
 
     def _find_context_word(self, text: str, start: int, end: int) -> Optional[str]:
@@ -55,6 +57,8 @@ class PurePatternRecognizer(Recognizer):
         for pat_name, regex, base_score in self.compiled:
             for m in regex.finditer(text):
                 kw = self._find_context_word(text, m.start(), m.end())
+                if self.require_context and kw is None:
+                    continue   # 硬約束：這個 recognizer 必須有 context 才能 fire
                 score = min(1.0, base_score + _CONTEXT_BOOST) if kw else base_score
                 exp = Explanation(
                     recognizer=self.name,
@@ -284,14 +288,14 @@ def get_pure_recognizers() -> List[Recognizer]:
         ], _OTP_CONTEXT),
         PurePatternRecognizer("CVV", [
             ("CVV_3", r"\d{3}", 0.30),
-        ], _CVV_CONTEXT),
+        ], _CVV_CONTEXT, require_context=True),
         PurePatternRecognizer("EXPIRY", [
             ("EXPIRY_MMYY",  r"(?:0[1-9]|1[0-2])\d{2}", 0.45),
             ("EXPIRY_SLASH", r"(?:0[1-9]|1[0-2])/\d{2}", 0.65),
         ], _EXPIRY_CONTEXT),
         PurePatternRecognizer("PIN", [
             ("PIN_46", r"\d{4,6}", 0.30),
-        ], _PIN_CONTEXT),
+        ], _PIN_CONTEXT, require_context=True),
         AddressEnhancedPure(),
         PurePatternRecognizer("STAFF_ID", [
             ("STAFF_ALPHA",  r"[A-Z]\d{4,8}", 0.55),
@@ -303,7 +307,7 @@ def get_pure_recognizers() -> List[Recognizer]:
         PurePatternRecognizer("BRANCH", [
             ("BRANCH_NUM",   r"\d{3,4}", 0.35),
             ("BRANCH_ALPHA", r"[A-Z]{2,4}\d{2,4}", 0.55),
-        ], _BRANCH_CONTEXT),
+        ], _BRANCH_CONTEXT, require_context=True),
         VerificationAnswerPure(),
         # Email — 補 Presidio predefined EmailRecognizer 的缺口
         PurePatternRecognizer("EMAIL_ADDRESS", [

@@ -14,8 +14,6 @@
                  → 移除冗餘的 in_fallback 參數，直接以 diarization_available 判斷
 """
 import re
-import warnings
-warnings.filterwarnings("ignore")
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -24,17 +22,17 @@ from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 
-from audit import AuditLogger
-from config import (
+from .audit import AuditLogger
+from .config import (
     TOKEN_MAP, PSEUDONYM_ENTITIES, AMOUNT_TRIGGER_ENTITIES,
     AMOUNT_PROXIMITY_CHARS, AGENT_QUESTION_PATTERNS, ANSWER_PATTERNS,
     FALLBACK_ANSWER_WINDOW_CHARS, SPEAKER_AGENT, SPEAKER_CUSTOMER,
     UsabilityTag, DEGRADED_MASKING_THRESHOLD,
 )
-from conflict_resolver import ConflictResolver
-from normalizer import normalize
-from pseudonym import PseudonymTracker
-from recognizers import get_all_custom_recognizers
+from .conflict_resolver import ConflictResolver
+from .normalizer import normalize
+from .pseudonym import PseudonymTracker
+from .recognizers import get_all_custom_recognizers
 
 
 @dataclass
@@ -83,25 +81,13 @@ class MaskingPipeline:
         score_threshold:          float = 0.60,
         mask_branch_code:         bool  = False,
         enable_llm_step:          bool  = False,
-        ckip_model:               str   = "bert-base",
-        ckip_device:              int   = -1,
         asr_confidence_threshold: float = 0.70,
         nlp_engine_name:          str   = "spacy",
         spacy_model:              str   = "zh_core_web_sm",
     ):
-        """
-        銀行語音文字脫敏管線 v3。
-
-        Note: CKIP Transformers NER 為必要組件（中文 PERSON / LOCATION 偵測來源）。
-        Presidio 的 `EntityRecognizer.__init__` 會同步呼叫 `load()`，因此 CKIP 模型
-        會在 `MaskingPipeline` 初始化時即下載並載入（首次執行時較慢）。
-        執行前須安裝 `ckip-transformers` 與 `torch`。
-        """
         self.score_threshold          = score_threshold
         self.mask_branch_code         = mask_branch_code
         self.enable_llm_step          = enable_llm_step
-        self.ckip_model               = ckip_model
-        self.ckip_device              = ckip_device
         self.asr_confidence_threshold = asr_confidence_threshold
 
         self._analyzer   = self._build_analyzer(nlp_engine_name, spacy_model)
@@ -199,9 +185,8 @@ class MaskingPipeline:
         # Step 6：Audit Log
         if self._logger:
             # BUG 2 修正：正確計算「有被 resolve 的 result id 集合」
-            # conflict_log 的每筆 entry 格式為
-            # (winner_result: RecognizerResult, loser_result: RecognizerResult, reason: str)
-            # —— 詳見 ConflictResolver.resolve() 的回傳型別註解
+            # conflict_log 元素格式由 ConflictResolver.resolve() 決定：
+            # 假設為 (winner_result, loser_result, reason) 的 tuple
             resolved_ids: Set[int] = set()
             for entry in conflict_log:
                 if entry:
@@ -293,12 +278,9 @@ class MaskingPipeline:
             provider   = NlpEngineProvider()
             nlp_engine = provider.create_engine()
 
-        registry = RecognizerRegistry(supported_languages=["zh", "en"])
+        registry = RecognizerRegistry()
         registry.load_predefined_recognizers(languages=["zh", "en"])
-        for r in get_all_custom_recognizers(
-            ckip_model=self.ckip_model,
-            ckip_device=self.ckip_device,
-        ):
+        for r in get_all_custom_recognizers():
             registry.add_recognizer(r)
 
         return AnalyzerEngine(
@@ -363,48 +345,21 @@ class MaskingPipeline:
         ★v3 強化：任何 speaker 只要包含敏感資料就脫敏。
         Diarization 的作用僅是輔助「問答配對」偵測，
         不是「只脫敏 CUSTOMER 發言」。
-
-        `speaker` 參數目前未參與決策（設計刻意），保留在簽名中以便
-        未來若銀行規範改為「僅客戶端遮罩」或「客服端放寬」時可就地切換，
-        而不需要更動所有 call site。
-
-        冪等性保證（issue #2 修正）：
-          以前版本直接 mutate `r.score`，導致多個問句 window 覆蓋同一 result
-          時會重複累加，且同一 turn 重跑結果不一致。本版改為：
-            - 收集每個 result 的 Q/A boost（取 max，不累加）
-            - Q + A 兩類 boost 可並存（視為獨立信號）
-            - 僅對需要 boost 的 result 建立新物件，不修改輸入
         """
-        if diarization_available:
-            return results
-
-        import copy as _copy
-
-        q_boost: Dict[int, float] = {}
-        a_boost: Dict[int, float] = {}
-
-        for qm in self._agent_q_pattern.finditer(text):
-            window_end = qm.end() + FALLBACK_ANSWER_WINDOW_CHARS
-            for r in results:
-                if qm.end() <= r.start <= window_end:
-                    q_boost[id(r)] = max(q_boost.get(id(r), 0.0), 0.15)
-
-        for ap in self._answer_patterns:
-            for am in ap.finditer(text):
+        if not diarization_available:
+            # 降級策略：問句後 N 字元內的結果提升信心分
+            for qm in self._agent_q_pattern.finditer(text):
+                window_end = qm.end() + FALLBACK_ANSWER_WINDOW_CHARS
                 for r in results:
-                    if am.start() <= r.start < am.end():
-                        a_boost[id(r)] = max(a_boost.get(id(r), 0.0), 0.10)
-
-        out: List[RecognizerResult] = []
-        for r in results:
-            total = q_boost.get(id(r), 0.0) + a_boost.get(id(r), 0.0)
-            if total > 0.0:
-                new_r = _copy.copy(r)
-                new_r.score = min(1.0, r.score + total)
-                out.append(new_r)
-            else:
-                out.append(r)
-        return out
+                    if qm.end() <= r.start <= window_end:
+                        r.score = min(1.0, r.score + 0.15)
+            # 回答 pattern 輔助提升
+            for ap in self._answer_patterns:
+                for am in ap.finditer(text):
+                    for r in results:
+                        if am.start() <= r.start < am.end():
+                            r.score = min(1.0, r.score + 0.10)
+        return results
 
     @staticmethod
     def _apply_per_span_replacement(
@@ -469,27 +424,11 @@ class MaskingPipeline:
         primary:   List[RecognizerResult],
         secondary: List[RecognizerResult],
     ) -> List[RecognizerResult]:
-        """
-        合併 primary (Presidio) 與 secondary (LLM) 結果。
-
-        對相同 (start, end, entity_type) 的 span：保留 score 較高者；
-        同分保留 primary（維持 Presidio 為主、LLM 為輔）。
-        """
-        by_key: Dict[Tuple[int, int, str], RecognizerResult] = {}
-        order: List[Tuple[int, int, str]] = []
-        for r in primary:
-            key = (r.start, r.end, r.entity_type)
-            if key not in by_key:
-                order.append(key)
-                by_key[key] = r
-        for r in secondary:
-            key = (r.start, r.end, r.entity_type)
-            if key not in by_key:
-                order.append(key)
-                by_key[key] = r
-            elif r.score > by_key[key].score:
-                by_key[key] = r
-        return [by_key[k] for k in order]
+        seen_spans = {(r.start, r.end, r.entity_type) for r in primary}
+        return primary + [
+            r for r in secondary
+            if (r.start, r.end, r.entity_type) not in seen_spans
+        ]
 
     def _run_llm_step(self, text: str) -> List[RecognizerResult]:
         try:
@@ -510,114 +449,3 @@ class MaskingPipeline:
             if pn.startswith("ADDR_"):
                 return pn
         return ""
-
-def demo():
-    """
-    快速驗證完整 pipeline。
-
-    NLP engine 使用 spaCy `zh_core_web_sm`，需先下載：
-        python -m spacy download zh_core_web_sm
-
-    首次執行時 CKIP 會下載並載入模型，需事先安裝：
-        pip install ckip-transformers torch
-    若 CKIP 與 spaCy NER 同時在相同 span 偵測到 PERSON 或 LOCATION，
-    Step 4.5 的 Exact Duplicate Dedup 會自動去重，並在 conflict_log
-    中記錄 reason="EXACT_DUP:...".
-    """
-    import spacy
-
-    # ── 確認 spaCy 中文模型已安裝 ─────────────────────────
-    try:
-        spacy.load("zh_core_web_sm")
-    except OSError:
-        raise RuntimeError(
-            "未安裝 zh_core_web_sm，請執行："
-            "python -m spacy download zh_core_web_sm"
-        )
-
-    # ── 模擬對話 ──────────────────────────────────────────
-    test_turns = [
-        DialogueTurn(speaker="AGENT",    text="請問您的大名是？"),
-        DialogueTurn(speaker="CUSTOMER", text="我叫王小明"),
-        DialogueTurn(speaker="AGENT",    text="請問您的身分證字號？"),
-        DialogueTurn(speaker="CUSTOMER", text="A一二三四五六七八九"),
-        DialogueTurn(speaker="AGENT",    text="電話號碼幾號呢？"),
-        DialogueTurn(speaker="CUSTOMER", text="零九一二三四五六七八"),
-        DialogueTurn(speaker="AGENT",    text="信用卡卡號是多少？"),
-        DialogueTurn(speaker="CUSTOMER", text="卡號1234567890123456且我到期日是03/26"),
-        DialogueTurn(speaker="AGENT",    text="請問驗證碼？"),
-        DialogueTurn(speaker="CUSTOMER", text="驗證碼是654321"),
-        DialogueTurn(speaker="AGENT",    text="需要轉帳多少？"),
-        DialogueTurn(speaker="CUSTOMER", text="我要轉帳50000元到帳號12345678901234"),
-        DialogueTurn(speaker="AGENT",    text="好的，請問您生日？"),
-        DialogueTurn(speaker="CUSTOMER", text="生日是民國七十四年五月一日"),
-        DialogueTurn(speaker="CUSTOMER", text="我住在台北市忠孝東路100號，Costco旁邊"),
-        DialogueTurn(speaker="AGENT",    text="請問母親姓名是？"),
-        DialogueTurn(speaker="CUSTOMER", text="母親的姓名是陳美玲"),
-    ]
- 
-    print("=" * 70)
-    print("  PII 脫敏管線 v3 — Demo (zh_core_web_sm)")
-    print("=" * 70)
-
-    # ── 初始化 ────────────────────────────────────────────
-    try:
-        pipeline = MaskingPipeline(
-            log_path=None,
-            score_threshold=0.50,
-            spacy_model="zh_core_web_sm",
-        )
-    except Exception as e:
-        print(f"\n[錯誤] Pipeline 初始化失敗：{e}")
-        print("請確認已安裝：pip install presidio-analyzer presidio-anonymizer spacy")
-        return
- 
-    # ── 逐句處理 ──────────────────────────────────────────
-    tracker = PseudonymTracker(session_id="demo_001")
- 
-    with pipeline:
-        for i, turn in enumerate(test_turns, 1):
-            result = pipeline.mask(
-                text=turn.text,
-                session_id="demo_001",
-                speaker=turn.speaker,
-                diarization_available=True,
-                tracker=tracker,
-            )
-            print(f"\n[Turn {i:02d}] {turn.speaker}")
-            print(f"  原始：{turn.text}")
-            if result.normalized_text != turn.text:
-                print(f"  正規：{result.normalized_text}")
-            print(f"  脫敏：{result.masked_text}")
-            if result.entities_found:
-                ents = ", ".join(
-                    f"{r.entity_type}({result.normalized_text[r.start:r.end]})"
-                    for r in result.entities_found
-                )
-                print(f"  實體：{ents}")
-            if result.conflict_log:
-                for entry in result.conflict_log:
-                    winner, loser, reason = entry
-                    print(
-                        f"  衝突：{winner.entity_type} 勝 {loser.entity_type} "
-                        f"({reason})"
-                    )
-            print(f"  可用度：{result.usability_tag}")
- 
-    # ── 假名對照表 ────────────────────────────────────────
-    print("\n" + "=" * 70)
-    print("  假名對照表")
-    print("=" * 70)
-    mapping = tracker.get_mapping()
-    if mapping:
-        for entity_type, value_map in mapping.items():
-            for original, token in value_map.items():
-                print(f"  {entity_type}: {original} → {token}")
-    else:
-        print("  （無假名映射）")
-    print("=" * 70)
-
-
-
-if __name__ == "__main__":
-    demo()
